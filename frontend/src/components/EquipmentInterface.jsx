@@ -155,6 +155,376 @@ function PLCInterface({ asset, plant, process }) {
   const [commandError, setCommandError] =
     React.useState("");
 
+  const [programCode, setProgramCode] =
+    React.useState(() => {
+      try {
+        return (
+          window.localStorage.getItem(
+            "ot-cyber-range-plc-program"
+          ) ||
+          `PROGRAM MAIN
+
+NETWORK 1
+
+IF START THEN
+    MOTOR_SPEED := 1450;
+    VALVE_POSITION := 50;
+END_IF;
+
+NETWORK 2
+
+IF STOP THEN
+    MOTOR_SPEED := 0;
+END_IF;
+
+NETWORK 3
+
+IF TEMPERATURE > 75 THEN
+    MOTOR_SPEED := 0;
+    ALARM := TRUE;
+END_IF;` 
+        );
+      } catch (error) {
+        return "PROGRAM MAIN\n";
+      }
+    });
+
+  const [programStatus, setProgramStatus] =
+    React.useState("NOT LOADED");
+
+  const [programMessage, setProgramMessage] =
+    React.useState("");
+
+  const [programErrors, setProgramErrors] =
+    React.useState([]);
+
+  const [plcProgram, setPlcProgram] =
+    React.useState(null);
+
+  const validateProgram = () => {
+
+    const errors = [];
+    const lines = programCode.split("\n");
+    const normalized = programCode.toUpperCase();
+
+    if (!normalized.includes("PROGRAM MAIN")) {
+      errors.push(
+        "Line 1: PROGRAM MAIN is required."
+      );
+    }
+
+    if (!normalized.includes("NETWORK")) {
+      errors.push(
+        "Program must contain at least one NETWORK."
+      );
+    }
+
+    const ifCount =
+      (normalized.match(/\bIF\b/g) || []).length;
+
+    const endIfCount =
+      (normalized.match(/\bEND_IF\b/g) || []).length;
+
+    if (ifCount !== endIfCount) {
+      errors.push(
+        "IF / END_IF mismatch. Every IF must have an END_IF."
+      );
+    }
+
+    const allowedVariables = [
+      "START",
+      "STOP",
+      "TEMPERATURE",
+      "PRESSURE",
+      "MOTOR_SPEED",
+      "VALVE_POSITION",
+      "ALARM",
+      "EMERGENCY_STOP",
+    ];
+
+    lines.forEach((line, index) => {
+
+      const trimmed = line.trim();
+
+      if (!trimmed ||
+          trimmed.startsWith("PROGRAM") ||
+          trimmed.startsWith("NETWORK") ||
+          trimmed === "END_IF;" ||
+          trimmed === "END_IF") {
+        return;
+      }
+
+      if (trimmed.startsWith("IF ")) {
+        return;
+      }
+
+      const assignmentMatch =
+        trimmed.match(/^([A-Z_]+)\s*:=/i);
+
+      if (assignmentMatch) {
+
+        const variable =
+          assignmentMatch[1].toUpperCase();
+
+        if (!allowedVariables.includes(variable)) {
+          errors.push(
+            `Line ${index + 1}: Unknown variable ${variable}.`
+          );
+        }
+
+        if (!trimmed.endsWith(";")) {
+          errors.push(
+            `Line ${index + 1}: Assignment must end with ';'.`
+          );
+        }
+      }
+    });
+
+    setProgramErrors(errors);
+
+    if (errors.length > 0) {
+      setProgramStatus("ERROR");
+      setProgramMessage(
+        `${errors.length} validation error(s)`
+      );
+      return false;
+    }
+
+    setProgramStatus("VALID");
+    setProgramMessage(
+      "Program syntax validated successfully."
+    );
+    return true;
+  };
+
+  const saveProgram = () => {
+
+    try {
+      window.localStorage.setItem(
+        "ot-cyber-range-plc-program",
+        programCode
+      );
+
+      setProgramStatus("SAVED");
+      setProgramMessage(
+        "Program saved locally on this engineering station."
+      );
+      setProgramErrors([]);
+
+    } catch (error) {
+      setProgramStatus("ERROR");
+      setProgramMessage(
+        `SAVE FAILED: ${error.message}`
+      );
+    }
+  };
+
+  const loadProgram = () => {
+
+    try {
+      const savedProgram =
+        window.localStorage.getItem(
+          "ot-cyber-range-plc-program"
+        );
+
+      if (!savedProgram) {
+        setProgramStatus("NOT LOADED");
+        setProgramMessage(
+          "No saved PLC program was found."
+        );
+        return;
+      }
+
+      setProgramCode(savedProgram);
+      setProgramStatus("LOADED");
+      setProgramMessage(
+        "Program loaded into the PLC editor."
+      );
+      setProgramErrors([]);
+
+    } catch (error) {
+      setProgramStatus("ERROR");
+      setProgramMessage(
+        `LOAD FAILED: ${error.message}`
+      );
+    }
+  };
+
+  const refreshPLCProgram = async () => {
+
+    try {
+
+      const response = await fetch(
+        "http://127.0.0.1:8000/api/plc/program"
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      setPlcProgram(data);
+
+      if (data?.source) {
+        setProgramCode(data.source);
+      }
+
+      if (data?.status) {
+        setProgramStatus(data.status);
+      }
+
+    } catch (error) {
+
+      console.error(
+        "PLC program status error:",
+        error
+      );
+
+    }
+  };
+
+  React.useEffect(() => {
+    refreshPLCProgram();
+  }, []);
+
+  const downloadProgram = async () => {
+
+    const valid = validateProgram();
+
+    if (!valid) {
+      return;
+    }
+
+    setProgramMessage(
+      "Downloading program to PLC memory..."
+    );
+
+    try {
+
+      const response = await fetch(
+        "http://127.0.0.1:8000/api/plc/program/download",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            source: programCode,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail || `HTTP ${response.status}`
+        );
+      }
+
+      setPlcProgram(data);
+      setProgramStatus(data.status || "LOADED");
+      setProgramMessage(
+        `PROGRAM MAIN v${data.version} DOWNLOADED TO PLC MEMORY`
+      );
+      setProgramErrors([]);
+
+    } catch (error) {
+
+      console.error(
+        "PLC program download error:",
+        error
+      );
+
+      setProgramStatus("ERROR");
+      setProgramMessage(
+        `DOWNLOAD FAILED: ${error.message}`
+      );
+    }
+  };
+
+  const programAction = async (action) => {
+
+    let endpoint;
+
+    switch (action) {
+
+      case "RUN":
+        endpoint =
+          "http://127.0.0.1:8000/api/plc/program/run";
+        break;
+
+      case "STOP":
+        endpoint =
+          "http://127.0.0.1:8000/api/plc/program/stop";
+        break;
+
+      case "RESET":
+        endpoint =
+          "http://127.0.0.1:8000/api/plc/program/reset";
+        break;
+
+      default:
+        return;
+    }
+
+    setProgramMessage(
+      `${action === "RUN" ? "STARTING" : action + "PING"} PLC PROGRAM...`
+    );
+    setProgramErrors([]);
+
+    try {
+
+      const response = await fetch(
+        endpoint,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail || `HTTP ${response.status}`
+        );
+      }
+
+      setPlcProgram(data);
+      setProgramStatus(data.status || "UNKNOWN");
+
+      if (action === "RUN") {
+        setProgramMessage(
+          `PLC PROGRAM MAIN v${data.version} IS RUNNING`
+        );
+      } else if (action === "STOP") {
+        setProgramMessage(
+          "PLC PROGRAM EXECUTION STOPPED"
+        );
+      } else {
+        setProgramMessage(
+          "PLC PROGRAM RUNTIME RESET"
+        );
+      }
+
+    } catch (error) {
+
+      console.error(
+        "PLC program command error:",
+        error
+      );
+
+      setProgramStatus("ERROR");
+      setProgramMessage(
+        `${action} FAILED: ${error.message}`
+      );
+    }
+  };
+
   const sendPLCCommand = async (command) => {
 
     setCommandStatus(
@@ -603,7 +973,6 @@ function PLCInterface({ asset, plant, process }) {
               RUN
             </button>
 
-
             <button
               type="button"
               className="hmi-red"
@@ -615,7 +984,6 @@ function PLCInterface({ asset, plant, process }) {
               STOP
             </button>
 
-
             <button
               type="button"
               onClick={() =>
@@ -626,7 +994,6 @@ function PLCInterface({ asset, plant, process }) {
             </button>
 
           </div>
-
 
           {(commandStatus ||
             commandError) && (
@@ -651,6 +1018,230 @@ function PLCInterface({ asset, plant, process }) {
             </div>
 
           )}
+
+        </IndustrialPanel>
+
+
+        {/* PLC PROGRAM EDITOR */}
+
+        <IndustrialPanel
+          title="PLC PROGRAM EDITOR"
+          className="plc-program-editor"
+        >
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "12px",
+              flexWrap: "wrap",
+              marginBottom: "10px",
+            }}
+          >
+
+            <div>
+              <strong
+                style={{
+                  display: "block",
+                  fontFamily: "monospace",
+                  fontSize: "13px",
+                }}
+              >
+                PROGRAM: MAIN
+              </strong>
+
+              <span
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: "11px",
+                  opacity: 0.75,
+                }}
+              >
+                Structured Text Simulation
+              </span>
+            </div>
+
+            <div style={{ textAlign: "right" }}>
+              <strong
+                style={{
+                  display: "block",
+                  fontFamily: "monospace",
+                  fontSize: "12px",
+                }}
+              >
+                STATUS: {programStatus}
+              </strong>
+
+              <span
+                style={{
+                  display: "block",
+                  marginTop: "3px",
+                  fontFamily: "monospace",
+                  fontSize: "10px",
+                  opacity: 0.7,
+                }}
+              >
+                PLC MEMORY: {plcProgram?.status || "NOT CONNECTED"}
+                {plcProgram?.version
+                  ? ` • v${plcProgram.version}`
+                  : ""}
+              </span>
+            </div>
+
+          </div>
+
+
+          <textarea
+            value={programCode}
+            onChange={(event) => {
+              setProgramCode(event.target.value);
+              setProgramStatus("MODIFIED");
+              setProgramMessage(
+                "Program modified. Validate before loading."
+              );
+              setProgramErrors([]);
+            }}
+            spellCheck={false}
+            aria-label="PLC program editor"
+            style={{
+              width: "100%",
+              minHeight: "360px",
+              resize: "vertical",
+              boxSizing: "border-box",
+              padding: "14px",
+              background: "#0b0f12",
+              color: "#d7f9df",
+              border: "1px solid rgba(255,255,255,0.15)",
+              borderRadius: "4px",
+              fontFamily: "Consolas, Monaco, monospace",
+              fontSize: "12px",
+              lineHeight: "1.55",
+              outline: "none",
+            }}
+          />
+
+
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+              flexWrap: "wrap",
+              marginTop: "10px",
+            }}
+          >
+
+            <button
+              type="button"
+              onClick={validateProgram}
+            >
+              VALIDATE
+            </button>
+
+            <button
+              type="button"
+              onClick={saveProgram}
+            >
+              SAVE
+            </button>
+
+            <button
+              type="button"
+              onClick={loadProgram}
+            >
+              LOAD LOCAL
+            </button>
+
+            <button
+              type="button"
+              className="hmi-green"
+              onClick={downloadProgram}
+            >
+              DOWNLOAD TO PLC
+            </button>
+
+            <button
+              type="button"
+              className="hmi-green"
+              onClick={() =>
+                programAction("RUN")
+              }
+            >
+              RUN PROGRAM
+            </button>
+
+            <button
+              type="button"
+              className="hmi-red"
+              onClick={() =>
+                programAction("STOP")
+              }
+            >
+              STOP PROGRAM
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                programAction("RESET")
+              }
+            >
+              RESET PROGRAM
+            </button>
+
+          </div>
+
+
+          {(programMessage ||
+            programErrors.length > 0) && (
+
+            <div
+              style={{
+                marginTop: "10px",
+                padding: "10px",
+                fontFamily: "monospace",
+                fontSize: "11px",
+                border:
+                  "1px solid rgba(255,255,255,0.15)",
+                background:
+                  "rgba(0,0,0,0.25)",
+              }}
+            >
+
+              {programMessage && (
+                <div>
+                  {programMessage}
+                </div>
+              )}
+
+              {programErrors.map(
+                (error, index) => (
+                  <div key={index}>
+                    ERROR: {error}
+                  </div>
+                )
+              )}
+
+            </div>
+
+          )}
+
+
+          <div
+            style={{
+              marginTop: "10px",
+              padding: "8px 10px",
+              fontSize: "10px",
+              fontFamily: "monospace",
+              opacity: 0.7,
+              border:
+                "1px dashed rgba(255,255,255,0.15)",
+            }}
+          >
+            ENGINEERING MODE: EDITOR ONLY. The PLC runtime
+            will execute the validated program after the
+            backend program manager and runtime are connected.
+          </div>
 
         </IndustrialPanel>
 

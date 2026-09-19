@@ -1,6 +1,7 @@
 import asyncio
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
 from simulation.plant import Plant
@@ -16,6 +17,10 @@ app = FastAPI(
     version="1.0.0"
 
 )
+
+class PLCProgramRequest(BaseModel):
+    source: str
+
 
 
 app.add_middleware(
@@ -63,6 +68,74 @@ def get_plant():
 def get_plc():
 
     return plant.plc.get_state()
+
+@app.get("/api/plc/program")
+def get_plc_program():
+
+    return plant.get_plc_program()
+
+
+@app.post("/api/plc/program/validate")
+def validate_plc_program(
+    request: PLCProgramRequest
+):
+
+    errors = plant.validate_plc_program(
+        request.source
+    )
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+    }
+
+
+@app.post("/api/plc/program/download")
+def download_plc_program(
+    request: PLCProgramRequest
+):
+
+    errors = plant.load_plc_program(
+        request.source
+    )
+
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "PLC program validation failed",
+                "errors": errors,
+            },
+        )
+
+    return plant.get_plc_program()
+
+
+@app.post("/api/plc/program/run")
+def run_plc_program():
+
+    try:
+        return plant.run_plc_program()
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        )
+
+
+@app.post("/api/plc/program/stop")
+def stop_plc_program():
+
+    return plant.stop_plc_program()
+
+
+@app.post("/api/plc/program/reset")
+def reset_plc_program():
+
+    return plant.reset_plc_program()
+
+
 @app.post("/api/plc/run")
 def run_plc():
 
@@ -137,7 +210,7 @@ def reset_hmi():
     )
 
     return plant.get_state()
-    
+
 @app.get("/api/events")
 def get_events():
 

@@ -6,6 +6,8 @@ from simulation.equipment import (
 from simulation.plc import PLC
 from simulation.process import ProcessState
 from simulation.events import OTEvent
+from simulation.plc_program import PLCProgram
+from simulation.plc_runtime import PLCRuntime
 
 
 class Plant:
@@ -31,6 +33,13 @@ class Plant:
             vlan=440,
             network="OT-PLC",
         )
+
+        # =====================================================
+        # PLC PROGRAM / RUNTIME
+        # =====================================================
+
+        self.plc_program = PLCProgram()
+        self.plc_runtime = PLCRuntime(self)
 
         # =====================================================
         # OTHER OT EQUIPMENT
@@ -219,6 +228,9 @@ class Plant:
     # =========================================================
 
     def update(self):
+
+        # Execute the user-loaded PLC program before the process advances.
+        self.plc_runtime.cycle()
 
         self.process.update()
 
@@ -571,6 +583,96 @@ class Plant:
         )
 
     # =========================================================
+    # PLC PROGRAM CONTROL
+    # =========================================================
+
+    def validate_plc_program(self, source: str):
+        from simulation.plc_validator import validate_program
+        return validate_program(source)
+
+    def load_plc_program(self, source: str):
+        errors = self.plc_program.load(source)
+
+        if errors:
+            self.add_event(
+                event_type="PLC_PROGRAM_VALIDATION_FAILED",
+                severity="HIGH",
+                source="PLC-001",
+                message="PLC program download rejected: " + "; ".join(errors),
+            )
+            return errors
+
+        self.add_event(
+            event_type="PLC_PROGRAM_DOWNLOAD",
+            severity="INFO",
+            source="PLC-001",
+            message=(
+                f"PLC program MAIN v{self.plc_program.version} "
+                "downloaded to PLC memory"
+            ),
+        )
+        return []
+
+    def run_plc_program(self):
+        self.plc_runtime.run()
+        return self.plc_program.to_dict()
+
+    def stop_plc_program(self):
+        self.plc_runtime.stop()
+        return self.plc_program.to_dict()
+
+    def reset_plc_program(self):
+        self.plc_runtime.reset()
+        return self.plc_program.to_dict()
+
+    def get_plc_program(self):
+        return self.plc_program.to_dict()
+
+    def apply_program_motor_speed(self, speed: float):
+        speed = max(0, min(2000, float(speed)))
+        old_speed = self.process.motor_speed
+
+        if abs(old_speed - speed) < 0.01:
+            return
+
+        self.process.change_motor_speed(speed)
+        self.plc.write_register("motor_speed", speed)
+
+        self.add_event(
+            event_type="PLC_PROGRAM_OUTPUT",
+            severity="HIGH" if speed < 500 else "INFO",
+            source="PLC-001",
+            message=(
+                f"PLC program commanded motor speed "
+                f"from {old_speed:.0f} RPM to {speed:.0f} RPM"
+            ),
+        )
+
+    def apply_program_valve_position(self, position: float):
+        position = max(0, min(100, float(position)))
+        old_position = self.process.valve_position
+
+        if abs(old_position - position) < 0.01:
+            return
+
+        self.process.change_valve_position(position)
+        self.plc.write_register("valve_position", position)
+
+        self.add_event(
+            event_type="PLC_PROGRAM_OUTPUT",
+            severity=(
+                "HIGH"
+                if position < 10 or position > 90
+                else "INFO"
+            ),
+            source="PLC-001",
+            message=(
+                f"PLC program commanded valve position "
+                f"from {old_position:.0f}% to {position:.0f}%"
+            ),
+        )
+
+    # =========================================================
     # GENERIC EQUIPMENT STATUS
     # =========================================================
 
@@ -665,6 +767,9 @@ class Plant:
 
             "plc":
                 self.plc.get_state(),
+
+            "plc_program":
+                self.plc_program.to_dict(),
 
             "equipment": [
                 equipment.get_info()
