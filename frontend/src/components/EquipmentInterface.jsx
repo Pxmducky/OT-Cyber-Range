@@ -122,6 +122,7 @@ function ValueRow({ label, value, unit = "" }) {
    PLC
 ========================================================= */
 
+
 function PLCInterface({ asset, plant, process }) {
 
   const plc = plant?.plc;
@@ -148,6 +149,88 @@ function PLCInterface({ asset, plant, process }) {
 
   const cpuState = plc?.cpu_state || "RUN";
 
+  const [commandStatus, setCommandStatus] =
+    React.useState("");
+
+  const [commandError, setCommandError] =
+    React.useState("");
+
+  const sendPLCCommand = async (command) => {
+
+    setCommandStatus(
+      `SENDING ${command}...`
+    );
+
+    setCommandError("");
+
+    let endpoint;
+
+    switch (command) {
+
+      case "RUN":
+        endpoint =
+          "http://127.0.0.1:8000/api/plc/run";
+        break;
+
+      case "STOP":
+        endpoint =
+          "http://127.0.0.1:8000/api/plc/stop";
+        break;
+
+      case "RESET":
+        endpoint =
+          "http://127.0.0.1:8000/api/plc/reset";
+        break;
+
+      default:
+        return;
+    }
+
+    try {
+
+      const response =
+        await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+        });
+
+      if (!response.ok) {
+
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+
+      }
+
+      await response.json();
+
+      setCommandStatus(
+        `${command} COMMAND SENT`
+      );
+
+      setTimeout(() => {
+        setCommandStatus("");
+      }, 2500);
+
+    } catch (error) {
+
+      console.error(
+        "PLC command error:",
+        error
+      );
+
+      setCommandStatus("");
+
+      setCommandError(
+        `COMMAND FAILED: ${error.message}`
+      );
+
+    }
+  };
+
   const inputs = plc?.inputs || {
     "I0.0": true,
     "I0.1": true,
@@ -172,7 +255,11 @@ function PLCInterface({ asset, plant, process }) {
 
       <div className="plc-top-strip">
         SIMATIC S7-1500
-        <span>ONLINE</span>
+        <span>
+          {cpuState === "RUN"
+            ? "ONLINE"
+            : "STOP"}
+        </span>
       </div>
 
 
@@ -202,12 +289,24 @@ function PLCInterface({ asset, plant, process }) {
             <div className="led-stack">
 
               <div>
-                <i className="led-green" />
+                <i
+                  className={
+                    cpuState === "RUN"
+                      ? "led-green"
+                      : "led-off"
+                  }
+                />
                 RUN
               </div>
 
               <div>
-                <i className="led-off" />
+                <i
+                  className={
+                    cpuState === "STOP"
+                      ? "led-red"
+                      : "led-off"
+                  }
+                />
                 STOP
               </div>
 
@@ -240,10 +339,23 @@ function PLCInterface({ asset, plant, process }) {
 
               {Object.entries(inputs).map(
                 ([name, active]) => (
+
                   <div key={name}>
-                    <i className={active ? "led-green" : "led-off"} />
-                    <span>{name}</span>
+
+                    <i
+                      className={
+                        active
+                          ? "led-green"
+                          : "led-off"
+                      }
+                    />
+
+                    <span>
+                      {name}
+                    </span>
+
                   </div>
+
                 )
               )}
 
@@ -262,10 +374,23 @@ function PLCInterface({ asset, plant, process }) {
 
               {Object.entries(outputs).map(
                 ([name, active]) => (
+
                   <div key={name}>
-                    <i className={active ? "led-green" : "led-off"} />
-                    <span>{name}</span>
+
+                    <i
+                      className={
+                        active
+                          ? "led-green"
+                          : "led-off"
+                      }
+                    />
+
+                    <span>
+                      {name}
+                    </span>
+
                   </div>
+
                 )
               )}
 
@@ -288,18 +413,31 @@ function PLCInterface({ asset, plant, process }) {
           <div className="plc-state">
 
             <div className="big-led">
-              <i className={cpuState === "RUN"
-                ? "led-green"
-                : "led-red"}
+
+              <i
+                className={
+                  cpuState === "RUN"
+                    ? "led-green"
+                    : "led-red"
+                }
               />
+
             </div>
 
             <div>
-              <span>OPERATING STATE</span>
-              <strong>{cpuState}</strong>
+
+              <span>
+                OPERATING STATE
+              </span>
+
+              <strong>
+                {cpuState}
+              </strong>
+
             </div>
 
           </div>
+
 
           <ValueRow
             label="Order Number"
@@ -331,25 +469,33 @@ function PLCInterface({ asset, plant, process }) {
 
           <ValueRow
             label="Temperature"
-            value={Number(temperature).toFixed(1)}
+            value={Number(
+              temperature
+            ).toFixed(1)}
             unit="°C"
           />
 
           <ValueRow
             label="Pressure"
-            value={Number(pressure).toFixed(2)}
+            value={Number(
+              pressure
+            ).toFixed(2)}
             unit="bar"
           />
 
           <ValueRow
             label="Motor Speed"
-            value={Number(motorSpeed).toFixed(0)}
+            value={Number(
+              motorSpeed
+            ).toFixed(0)}
             unit="RPM"
           />
 
           <ValueRow
             label="Valve Position"
-            value={Number(valve).toFixed(0)}
+            value={Number(
+              valve
+            ).toFixed(0)}
             unit="%"
           />
 
@@ -393,6 +539,7 @@ function PLCInterface({ asset, plant, process }) {
         <IndustrialPanel title="DIAGNOSTIC BUFFER">
 
           <div className="diagnostic-line">
+
             <span className="diag-time">
               13:42:07
             </span>
@@ -400,9 +547,11 @@ function PLCInterface({ asset, plant, process }) {
             <span>
               CPU cycle completed
             </span>
+
           </div>
 
           <div className="diagnostic-line">
+
             <span className="diag-time">
               13:42:06
             </span>
@@ -410,9 +559,11 @@ function PLCInterface({ asset, plant, process }) {
             <span>
               I/O update completed
             </span>
+
           </div>
 
           <div className="diagnostic-line">
+
             <span className="diag-time">
               13:42:05
             </span>
@@ -420,7 +571,86 @@ function PLCInterface({ asset, plant, process }) {
             <span>
               Communication OK
             </span>
+
           </div>
+
+        </IndustrialPanel>
+
+
+        {/* PLC OPERATOR CONTROL */}
+
+        <IndustrialPanel
+          title="PLC OPERATOR CONTROL"
+        >
+
+          <div
+            style={{
+              display: "flex",
+              gap: "10px",
+              flexWrap: "wrap",
+              marginBottom: "10px",
+            }}
+          >
+
+            <button
+              type="button"
+              className="hmi-green"
+              onClick={() =>
+                sendPLCCommand("RUN")
+              }
+              disabled={cpuState === "RUN"}
+            >
+              RUN
+            </button>
+
+
+            <button
+              type="button"
+              className="hmi-red"
+              onClick={() =>
+                sendPLCCommand("STOP")
+              }
+              disabled={cpuState === "STOP"}
+            >
+              STOP
+            </button>
+
+
+            <button
+              type="button"
+              onClick={() =>
+                sendPLCCommand("RESET")
+              }
+            >
+              RESET
+            </button>
+
+          </div>
+
+
+          {(commandStatus ||
+            commandError) && (
+
+            <div
+              style={{
+                marginTop: "8px",
+                padding: "8px 10px",
+                fontSize: "11px",
+                fontFamily: "monospace",
+                border:
+                  "1px solid rgba(255,255,255,0.15)",
+                background:
+                  "rgba(0,0,0,0.25)",
+              }}
+            >
+
+              {commandError
+                ? commandError
+                : commandStatus}
+
+            </div>
+
+          )}
 
         </IndustrialPanel>
 
@@ -431,9 +661,11 @@ function PLCInterface({ asset, plant, process }) {
 }
 
 
+
 /* =========================================================
    HMI
 ========================================================= */
+
 
 function HMIInterface({ asset, process }) {
 
@@ -473,38 +705,27 @@ function HMIInterface({ asset, process }) {
 
     setCommandError("");
 
-
     let endpoint;
-
 
     switch (command) {
 
       case "START":
         endpoint =
-          "http://127.0.0.1:8000/api/plant/resume";
+          "http://127.0.0.1:8000/api/hmi/start";
         break;
-
 
       case "STOP":
         endpoint =
-          "http://127.0.0.1:8000/api/plant/stop";
+          "http://127.0.0.1:8000/api/hmi/stop";
         break;
-
 
       case "RESET":
-        /*
-         * Por ahora RESET recupera la producción.
-         * Después podemos implementar un reset industrial
-         * independiente para alarmas.
-         */
         endpoint =
-          "http://127.0.0.1:8000/api/plant/resume";
+          "http://127.0.0.1:8000/api/hmi/reset";
         break;
-
 
       default:
         return;
-
     }
 
 
@@ -647,7 +868,8 @@ function HMIInterface({ asset, process }) {
               <div
                 className="tank-liquid"
                 style={{
-                  height: `${running ? 72 : 72}%`
+                  height:
+                    `${running ? 72 : 72}%`
                 }}
               />
 
@@ -699,7 +921,9 @@ function HMIInterface({ asset, process }) {
               }
             >
 
-              <Factory size={32} />
+              <Factory
+                size={32}
+              />
 
               <span>
                 MACHINE
@@ -1045,8 +1269,8 @@ function HMIInterface({ asset, process }) {
     </div>
 
   );
-
 }
+
 
 /* =========================================================
    SCADA
@@ -1296,42 +1520,450 @@ function CNCInterface({ asset, process }) {
    MOTOR
 ========================================================= */
 
+
 function MotorInterface({ asset, process }) {
 
   const rpm = process?.motor_speed ?? 1450;
+
+  const [speedInput, setSpeedInput] =
+    React.useState(
+      Number(rpm).toFixed(0)
+    );
+
+  const [commandStatus, setCommandStatus] =
+    React.useState("");
+
+  const [commandError, setCommandError] =
+    React.useState("");
+
+
+  /*
+   * =========================================================
+   * MOTOR COMMAND
+   * =========================================================
+   */
+
+  const changeMotorSpeed = async (speed) => {
+
+    const numericSpeed =
+      Number(speed);
+
+    if (
+      Number.isNaN(numericSpeed) ||
+      numericSpeed < 0 ||
+      numericSpeed > 2000
+    ) {
+
+      setCommandError(
+        "INVALID SPEED: USE 0-2000 RPM"
+      );
+
+      setCommandStatus("");
+
+      return;
+    }
+
+
+    setCommandStatus(
+      `SETTING SPEED TO ${numericSpeed} RPM...`
+    );
+
+    setCommandError("");
+
+
+    try {
+
+      const response =
+        await fetch(
+          `http://127.0.0.1:8000/api/plant/motor?speed=${numericSpeed}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+          }
+        );
+
+
+      if (!response.ok) {
+
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+
+      }
+
+
+      await response.json();
+
+
+      setCommandStatus(
+        `MOTOR SPEED SET TO ${numericSpeed} RPM`
+      );
+
+
+      setTimeout(() => {
+
+        setCommandStatus("");
+
+      }, 3000);
+
+
+    } catch (error) {
+
+      console.error(
+        "Motor command error:",
+        error
+      );
+
+
+      setCommandStatus("");
+
+      setCommandError(
+        `COMMAND FAILED: ${error.message}`
+      );
+
+    }
+
+  };
+
+
+  /*
+   * =========================================================
+   * APPLY SPEED
+   * =========================================================
+   */
+
+  const handleApplySpeed = () => {
+
+    changeMotorSpeed(
+      speedInput
+    );
+
+  };
+
+
+  /*
+   * =========================================================
+   * STOP MOTOR
+   * =========================================================
+   */
+
+  const handleMotorStop = () => {
+
+    setSpeedInput("0");
+
+    changeMotorSpeed(0);
+
+  };
+
+
+  /*
+   * =========================================================
+   * SYNCHRONIZE INPUT WITH PROCESS
+   * =========================================================
+   */
+
+  React.useEffect(() => {
+
+    setSpeedInput(
+      Number(rpm).toFixed(0)
+    );
+
+  }, [rpm]);
+
 
   return (
 
     <div className="classic-interface">
 
+
+      {/* =====================================================
+          MOTOR / DRIVE
+      ===================================================== */}
+
       <IndustrialPanel title="MOTOR / DRIVE">
 
         <div className="motor-real">
 
-          <RotateCw size={65} />
+          <RotateCw
+            size={65}
+          />
+
 
           <div>
-            <span>ACTUAL SPEED</span>
-            <strong>{Number(rpm).toFixed(0)}</strong>
-            <small>RPM</small>
+
+            <span>
+              ACTUAL SPEED
+            </span>
+
+            <strong>
+              {Number(rpm).toFixed(0)}
+            </strong>
+
+            <small>
+              RPM
+            </small>
+
           </div>
 
         </div>
 
       </IndustrialPanel>
 
+
+      {/* =====================================================
+          DRIVE PARAMETERS
+      ===================================================== */}
+
       <IndustrialPanel title="DRIVE PARAMETERS">
 
-        <ValueRow label="Speed" value={Number(rpm).toFixed(0)} unit="RPM" />
-        <ValueRow label="Frequency" value={(Number(rpm) / 30).toFixed(1)} unit="Hz" />
-        <ValueRow label="Load" value={Math.min(100, Number(rpm) / 18).toFixed(0)} unit="%" />
-        <ValueRow label="Drive State" value="RUN" />
+        <ValueRow
+          label="Speed"
+          value={
+            Number(rpm).toFixed(0)
+          }
+          unit="RPM"
+        />
+
+
+        <ValueRow
+          label="Frequency"
+          value={
+            (
+              Number(rpm) / 30
+            ).toFixed(1)
+          }
+          unit="Hz"
+        />
+
+
+        <ValueRow
+          label="Load"
+          value={
+            Math.min(
+              100,
+              Number(rpm) / 18
+            ).toFixed(0)
+          }
+          unit="%"
+        />
+
+
+        <ValueRow
+          label="Drive State"
+          value={
+            Number(rpm) > 0
+              ? "RUN"
+              : "STOP"
+          }
+        />
 
       </IndustrialPanel>
+
+
+      {/* =====================================================
+          OPERATOR CONTROL
+      ===================================================== */}
+
+      <IndustrialPanel title="OPERATOR CONTROL">
+
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+          }}
+        >
+
+
+          {/* SPEED INPUT */}
+
+          <div>
+
+            <label
+              style={{
+                display: "block",
+                marginBottom: "6px",
+                fontSize: "12px",
+                fontFamily:
+                  "monospace",
+              }}
+            >
+              TARGET SPEED
+            </label>
+
+
+            <div
+              style={{
+                display: "flex",
+                gap: "8px",
+                alignItems: "center",
+              }}
+            >
+
+              <input
+                type="number"
+                min="0"
+                max="2000"
+                step="50"
+                value={speedInput}
+                onChange={(event) =>
+                  setSpeedInput(
+                    event.target.value
+                  )
+                }
+                style={{
+                  width: "120px",
+                  padding: "8px",
+                  fontFamily:
+                    "monospace",
+                  boxSizing:
+                    "border-box",
+                }}
+              />
+
+
+              <span>
+                RPM
+              </span>
+
+
+              <button
+                type="button"
+                onClick={
+                  handleApplySpeed
+                }
+              >
+                APPLY
+              </button>
+
+            </div>
+
+          </div>
+
+
+          {/* STOP */}
+
+          <div>
+
+            <button
+              type="button"
+              className="hmi-red"
+              onClick={
+                handleMotorStop
+              }
+              disabled={
+                Number(rpm) === 0
+              }
+            >
+              STOP MOTOR
+            </button>
+
+          </div>
+
+
+          {/* COMMAND STATUS */}
+
+          {(commandStatus ||
+            commandError) && (
+
+            <div
+              style={{
+                padding:
+                  "8px 10px",
+                fontSize: "11px",
+                fontFamily:
+                  "monospace",
+                border:
+                  "1px solid rgba(255,255,255,0.15)",
+                background:
+                  "rgba(0,0,0,0.25)",
+              }}
+            >
+
+              {commandError
+                ? commandError
+                : commandStatus}
+
+            </div>
+
+          )}
+
+        </div>
+
+      </IndustrialPanel>
+
+
+      {/* =====================================================
+          MOTOR INFORMATION
+      ===================================================== */}
+
+      <IndustrialPanel title="MOTOR INFORMATION">
+
+        <ValueRow
+          label="Asset ID"
+          value={
+            asset?.asset_id ||
+            "M-001"
+          }
+        />
+
+
+        <ValueRow
+          label="IP Address"
+          value={
+            asset?.ip_address ||
+            "172.16.100.20"
+          }
+        />
+
+
+        <ValueRow
+          label="VLAN"
+          value={
+            asset?.vlan ||
+            440
+          }
+        />
+
+
+        <ValueRow
+          label="Manufacturer"
+          value={
+            asset?.manufacturer ||
+            "Siemens"
+          }
+        />
+
+
+        <ValueRow
+          label="Model"
+          value={
+            asset?.model ||
+            "SIMOTICS"
+          }
+        />
+
+
+        <ValueRow
+          label="Nominal Speed"
+          value={
+            asset?.properties
+              ?.nominal_speed ||
+            1450
+          }
+          unit="RPM"
+        />
+
+      </IndustrialPanel>
+
 
     </div>
   );
 }
+
 
 
 /* =========================================================
@@ -1422,13 +2054,198 @@ function PressureInterface({ asset, process }) {
    VALVE
 ========================================================= */
 
+
 function ValveInterface({ asset, process }) {
 
-  const position = process?.valve_position ?? 50;
+  const position =
+    process?.valve_position ?? 50;
+
+  const [positionInput, setPositionInput] =
+    React.useState(
+      Number(position).toFixed(0)
+    );
+
+  const [commandStatus, setCommandStatus] =
+    React.useState("");
+
+  const [commandError, setCommandError] =
+    React.useState("");
+
+
+  /*
+   * =========================================================
+   * VALVE COMMAND
+   * =========================================================
+   */
+
+  const changeValvePosition = async (
+    newPosition
+  ) => {
+
+    const numericPosition =
+      Number(newPosition);
+
+
+    if (
+      Number.isNaN(numericPosition) ||
+      numericPosition < 0 ||
+      numericPosition > 100
+    ) {
+
+      setCommandError(
+        "INVALID POSITION: USE 0-100%"
+      );
+
+      setCommandStatus("");
+
+      return;
+    }
+
+
+    setCommandStatus(
+      `SETTING VALVE TO ${numericPosition}%...`
+    );
+
+    setCommandError("");
+
+
+    try {
+
+      const response =
+        await fetch(
+          `http://127.0.0.1:8000/api/plant/valve?position=${numericPosition}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+          }
+        );
+
+
+      if (!response.ok) {
+
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+
+      }
+
+
+      await response.json();
+
+
+      setCommandStatus(
+        `VALVE POSITION SET TO ${numericPosition}%`
+      );
+
+
+      setTimeout(() => {
+
+        setCommandStatus("");
+
+      }, 3000);
+
+
+    } catch (error) {
+
+      console.error(
+        "Valve command error:",
+        error
+      );
+
+
+      setCommandStatus("");
+
+      setCommandError(
+        `COMMAND FAILED: ${error.message}`
+      );
+
+    }
+
+  };
+
+
+  /*
+   * =========================================================
+   * APPLY POSITION
+   * =========================================================
+   */
+
+  const handleApplyPosition = () => {
+
+    changeValvePosition(
+      positionInput
+    );
+
+  };
+
+
+  /*
+   * =========================================================
+   * OPEN
+   * =========================================================
+   */
+
+  const handleOpen = () => {
+
+    setPositionInput("100");
+
+    changeValvePosition(100);
+
+  };
+
+
+  /*
+   * =========================================================
+   * CLOSE
+   * =========================================================
+   */
+
+  const handleClose = () => {
+
+    setPositionInput("0");
+
+    changeValvePosition(0);
+
+  };
+
+
+  /*
+   * =========================================================
+   * SYNCHRONIZE INPUT WITH PROCESS
+   * =========================================================
+   */
+
+  React.useEffect(() => {
+
+    setPositionInput(
+      Number(position).toFixed(0)
+    );
+
+  }, [position]);
+
+
+  /*
+   * =========================================================
+   * VALVE STATUS
+   * =========================================================
+   */
+
+  const valveAlarm =
+    Number(position) < 10 ||
+    Number(position) > 90;
+
 
   return (
 
     <div className="classic-interface">
+
+
+      {/* =====================================================
+          CONTROL VALVE
+      ===================================================== */}
 
       <IndustrialPanel title="CONTROL VALVE">
 
@@ -1438,9 +2255,11 @@ function ValveInterface({ asset, process }) {
             ◆
           </div>
 
+
           <strong>
             {Number(position).toFixed(0)}%
           </strong>
+
 
           <span>
             VALVE POSITION
@@ -1450,25 +2269,240 @@ function ValveInterface({ asset, process }) {
 
       </IndustrialPanel>
 
+
+      {/* =====================================================
+          ACTUATOR
+      ===================================================== */}
+
       <IndustrialPanel title="ACTUATOR">
 
-        <ValueRow label="Position" value={Number(position).toFixed(0)} unit="%" />
-        <ValueRow label="Mode" value="AUTO" />
-        <ValueRow label="Command" value="NORMAL" />
-        <ValueRow label="Fault" value="NONE" />
+        <ValueRow
+          label="Position"
+          value={
+            Number(position).toFixed(0)
+          }
+          unit="%"
+        />
+
+
+        <ValueRow
+          label="Mode"
+          value="AUTO"
+        />
+
+
+        <ValueRow
+          label="Command"
+          value={
+            valveAlarm
+              ? "OUT OF RANGE"
+              : "NORMAL"
+          }
+        />
+
+
+        <ValueRow
+          label="Fault"
+          value={
+            valveAlarm
+              ? "PROCESS ALARM"
+              : "NONE"
+          }
+        />
 
       </IndustrialPanel>
+
+
+      {/* =====================================================
+          OPERATOR CONTROL
+      ===================================================== */}
+
+      <IndustrialPanel title="OPERATOR CONTROL">
+
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+          }}
+        >
+
+
+          {/* POSITION */}
+
+          <div>
+
+            <label
+              style={{
+                display: "block",
+                marginBottom: "6px",
+                fontSize: "12px",
+                fontFamily:
+                  "monospace",
+              }}
+            >
+              TARGET POSITION
+            </label>
+
+
+            <div
+              style={{
+                display: "flex",
+                gap: "8px",
+                alignItems: "center",
+              }}
+            >
+
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="5"
+                value={positionInput}
+                onChange={(event) =>
+                  setPositionInput(
+                    event.target.value
+                  )
+                }
+                style={{
+                  width: "100px",
+                  padding: "8px",
+                  fontFamily:
+                    "monospace",
+                  boxSizing:
+                    "border-box",
+                }}
+              />
+
+
+              <span>
+                %
+              </span>
+
+
+              <button
+                type="button"
+                onClick={
+                  handleApplyPosition
+                }
+              >
+                APPLY
+              </button>
+
+            </div>
+
+          </div>
+
+
+          {/* QUICK COMMANDS */}
+
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+            }}
+          >
+
+            <button
+              type="button"
+              onClick={handleOpen}
+            >
+              OPEN
+            </button>
+
+
+            <button
+              type="button"
+              className="hmi-red"
+              onClick={handleClose}
+            >
+              CLOSE
+            </button>
+
+          </div>
+
+
+          {/* STATUS */}
+
+          {(commandStatus ||
+            commandError) && (
+
+            <div
+              style={{
+                padding:
+                  "8px 10px",
+                fontSize: "11px",
+                fontFamily:
+                  "monospace",
+                border:
+                  "1px solid rgba(255,255,255,0.15)",
+                background:
+                  "rgba(0,0,0,0.25)",
+              }}
+            >
+
+              {commandError
+                ? commandError
+                : commandStatus}
+
+            </div>
+
+          )}
+
+        </div>
+
+      </IndustrialPanel>
+
+
+      {/* =====================================================
+          NETWORK
+      ===================================================== */}
 
       <IndustrialPanel title="NETWORK">
 
-        <ValueRow label="IP Address" value={asset?.ip_address} />
-        <ValueRow label="VLAN" value={asset?.vlan} />
+        <ValueRow
+          label="IP Address"
+          value={
+            asset?.ip_address
+          }
+        />
+
+
+        <ValueRow
+          label="VLAN"
+          value={
+            asset?.vlan
+          }
+        />
+
+
+        <ValueRow
+          label="Asset ID"
+          value={
+            asset?.asset_id ||
+            "V-001"
+          }
+        />
+
+
+        <ValueRow
+          label="Connection"
+          value="CONNECTED"
+        />
+
+
+        <ValueRow
+          label="Protocol"
+          value="PROFINET"
+        />
 
       </IndustrialPanel>
+
 
     </div>
   );
 }
+
 
 
 /* =========================================================

@@ -63,8 +63,81 @@ def get_plant():
 def get_plc():
 
     return plant.plc.get_state()
+@app.post("/api/plc/run")
+def run_plc():
+
+    plant.run_plc()
+
+    return plant.get_state()
 
 
+@app.post("/api/plc/stop")
+def stop_plc():
+
+    plant.stop_plc()
+
+    return plant.get_state()
+
+
+@app.post("/api/plc/reset")
+def reset_plc():
+
+    plant.run_plc()
+
+    plant.add_event(
+        event_type="PLC_RESET",
+        severity="INFO",
+        source="PLC-001",
+        message="PLC reset executed"
+    )
+
+    return plant.get_state()
+
+
+@app.post("/api/hmi/start")
+def start_hmi():
+
+    plant.resume_production()
+
+    plant.add_event(
+        event_type="HMI_START",
+        severity="INFO",
+        source="HMI-001",
+        message="Production START command issued from HMI"
+    )
+
+    return plant.get_state()
+
+
+@app.post("/api/hmi/stop")
+def stop_hmi():
+
+    plant.stop_production()
+
+    plant.add_event(
+        event_type="HMI_STOP",
+        severity="HIGH",
+        source="HMI-001",
+        message="Production STOP command issued from HMI"
+    )
+
+    return plant.get_state()
+
+
+@app.post("/api/hmi/reset")
+def reset_hmi():
+
+    plant.resume_production()
+
+    plant.add_event(
+        event_type="HMI_RESET",
+        severity="INFO",
+        source="HMI-001",
+        message="HMI reset command executed"
+    )
+
+    return plant.get_state()
+    
 @app.get("/api/events")
 def get_events():
 
