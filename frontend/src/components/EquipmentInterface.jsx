@@ -452,6 +452,121 @@ function HMIInterface({ asset, process }) {
   const running =
     process?.production_running !== false;
 
+  const [commandStatus, setCommandStatus] =
+    React.useState("");
+
+  const [commandError, setCommandError] =
+    React.useState("");
+
+
+  /*
+   * =========================================================
+   * HMI COMMANDS
+   * =========================================================
+   */
+
+  const sendCommand = async (command) => {
+
+    setCommandStatus(
+      `SENDING ${command}...`
+    );
+
+    setCommandError("");
+
+
+    let endpoint;
+
+
+    switch (command) {
+
+      case "START":
+        endpoint =
+          "http://127.0.0.1:8000/api/plant/resume";
+        break;
+
+
+      case "STOP":
+        endpoint =
+          "http://127.0.0.1:8000/api/plant/stop";
+        break;
+
+
+      case "RESET":
+        /*
+         * Por ahora RESET recupera la producción.
+         * Después podemos implementar un reset industrial
+         * independiente para alarmas.
+         */
+        endpoint =
+          "http://127.0.0.1:8000/api/plant/resume";
+        break;
+
+
+      default:
+        return;
+
+    }
+
+
+    try {
+
+      const response =
+        await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+        });
+
+
+      if (!response.ok) {
+
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+
+      }
+
+
+      await response.json();
+
+
+      setCommandStatus(
+        `${command} COMMAND SENT`
+      );
+
+
+      /*
+       * Quitamos el mensaje después de unos segundos
+       */
+
+      setTimeout(() => {
+
+        setCommandStatus("");
+
+      }, 2500);
+
+
+    } catch (error) {
+
+      console.error(
+        "HMI command error:",
+        error
+      );
+
+
+      setCommandStatus("");
+
+
+      setCommandError(
+        `COMMAND FAILED: ${error.message}`
+      );
+
+    }
+
+  };
+
 
   return (
 
@@ -459,18 +574,25 @@ function HMIInterface({ asset, process }) {
 
       <div className="hmi-bezel">
 
+
         <div className="hmi-brand">
           SIEMENS
         </div>
+
 
         <div className="hmi-model">
           SIMATIC HMI
         </div>
 
 
-        {/* SCREEN */}
+        {/* =================================================
+            SCREEN
+        ================================================= */}
 
         <div className="hmi-screen-real">
+
+
+          {/* HEADER */}
 
           <div className="hmi-screen-header">
 
@@ -479,11 +601,15 @@ function HMIInterface({ asset, process }) {
             </strong>
 
             <span>
-              13:42:07
+              {new Date().toLocaleTimeString(
+                "en-GB"
+              )}
             </span>
 
           </div>
 
+
+          {/* STATUS */}
 
           <div className="hmi-status-bar">
 
@@ -491,20 +617,39 @@ function HMIInterface({ asset, process }) {
               MAIN SCREEN
             </span>
 
-            <strong className={running ? "hmi-run" : "hmi-stop"}>
-              {running ? "RUNNING" : "STOPPED"}
+
+            <strong
+              className={
+                running
+                  ? "hmi-run"
+                  : "hmi-stop"
+              }
+            >
+
+              {running
+                ? "RUNNING"
+                : "STOPPED"}
+
             </strong>
 
           </div>
 
 
-          {/* PROCESS DIAGRAM */}
+          {/* =================================================
+              PROCESS DIAGRAM
+          ================================================= */}
 
           <div className="hmi-process-diagram">
 
+
             <div className="hmi-tank">
 
-              <div className="tank-liquid" />
+              <div
+                className="tank-liquid"
+                style={{
+                  height: `${running ? 72 : 72}%`
+                }}
+              />
 
               <span>
                 PROCESS
@@ -522,8 +667,18 @@ function HMIInterface({ asset, process }) {
 
             <div className="hmi-pump">
 
-              <div className="pump-circle">
-                <RotateCw size={24} />
+              <div
+                className={
+                  running
+                    ? "pump-circle"
+                    : "pump-circle stopped"
+                }
+              >
+
+                <RotateCw
+                  size={24}
+                />
+
               </div>
 
               <span>
@@ -536,7 +691,13 @@ function HMIInterface({ asset, process }) {
             <div className="hmi-pipe horizontal" />
 
 
-            <div className="hmi-machine">
+            <div
+              className={
+                running
+                  ? "hmi-machine"
+                  : "hmi-machine stopped"
+              }
+            >
 
               <Factory size={32} />
 
@@ -549,7 +710,9 @@ function HMIInterface({ asset, process }) {
 
             <div className="hmi-valve-symbol">
 
-              <span>V-01</span>
+              <span>
+                V-01
+              </span>
 
               <div className="valve-shape">
                 ◆
@@ -564,97 +727,250 @@ function HMIInterface({ asset, process }) {
           </div>
 
 
-          {/* VALUES */}
+          {/* =================================================
+              PROCESS VALUES
+          ================================================= */}
 
           <div className="hmi-values">
 
-            <div>
-              <span>TEMP</span>
-              <strong>
-                {Number(temperature).toFixed(1)}
-              </strong>
-              <small>°C</small>
-            </div>
 
             <div>
-              <span>PRESS</span>
+
+              <span>
+                TEMP
+              </span>
+
               <strong>
-                {Number(pressure).toFixed(2)}
+                {Number(
+                  temperature
+                ).toFixed(1)}
               </strong>
-              <small>bar</small>
+
+              <small>
+                °C
+              </small>
+
             </div>
 
-            <div>
-              <span>SPEED</span>
-              <strong>
-                {Number(motorSpeed).toFixed(0)}
-              </strong>
-              <small>RPM</small>
-            </div>
 
             <div>
-              <span>VALVE</span>
+
+              <span>
+                PRESS
+              </span>
+
               <strong>
-                {Number(valve).toFixed(0)}
+                {Number(
+                  pressure
+                ).toFixed(2)}
               </strong>
-              <small>%</small>
+
+              <small>
+                bar
+              </small>
+
+            </div>
+
+
+            <div>
+
+              <span>
+                SPEED
+              </span>
+
+              <strong>
+                {Number(
+                  motorSpeed
+                ).toFixed(0)}
+              </strong>
+
+              <small>
+                RPM
+              </small>
+
+            </div>
+
+
+            <div>
+
+              <span>
+                VALVE
+              </span>
+
+              <strong>
+                {Number(
+                  valve
+                ).toFixed(0)}
+              </strong>
+
+              <small>
+                %
+              </small>
+
             </div>
 
           </div>
 
 
-          {/* ALARM AREA */}
+          {/* =================================================
+              ALARM
+          ================================================= */}
 
           <div className="hmi-alarm">
 
-            <AlertTriangle size={16} />
+            <AlertTriangle
+              size={16}
+            />
 
             <span>
               ALARM STATUS
             </span>
 
             <strong>
-              {running ? "NO ACTIVE ALARMS" : "PROCESS STOPPED"}
+
+              {running
+                ? "NO ACTIVE ALARMS"
+                : "PROCESS STOPPED"}
+
             </strong>
 
           </div>
 
 
-          {/* OPERATOR BUTTONS */}
+          {/* =================================================
+              COMMAND STATUS
+          ================================================= */}
+
+          {(commandStatus ||
+            commandError) && (
+
+            <div
+              style={{
+                marginTop: "8px",
+                padding: "6px 10px",
+                fontSize: "11px",
+                fontFamily:
+                  "monospace",
+                border:
+                  "1px solid rgba(255,255,255,0.15)",
+                background:
+                  "rgba(0,0,0,0.25)",
+              }}
+            >
+
+              {commandError
+                ? commandError
+                : commandStatus}
+
+            </div>
+
+          )}
+
+
+          {/* =================================================
+              OPERATOR BUTTONS
+          ================================================= */}
 
           <div className="hmi-buttons">
 
-            <button className="hmi-green">
+
+            <button
+              type="button"
+              className="hmi-green"
+              onClick={() =>
+                sendCommand("START")
+              }
+              disabled={running}
+            >
+
               START
+
             </button>
 
-            <button className="hmi-red">
+
+            <button
+              type="button"
+              className="hmi-red"
+              onClick={() =>
+                sendCommand("STOP")
+              }
+              disabled={!running}
+            >
+
               STOP
+
             </button>
 
-            <button>
+
+            <button
+              type="button"
+              onClick={() =>
+                sendCommand("RESET")
+              }
+            >
+
               RESET
+
             </button>
 
-            <button>
+
+            <button
+              type="button"
+              onClick={() => {
+
+                setCommandStatus(
+                  "MANUAL MODE NOT AVAILABLE"
+                );
+
+                setTimeout(() => {
+
+                  setCommandStatus("");
+
+                }, 2500);
+
+              }}
+            >
+
               MANUAL
+
             </button>
+
 
           </div>
+
 
         </div>
 
 
-        {/* PHYSICAL HMI BUTTONS */}
+        {/* =================================================
+            PHYSICAL HMI BUTTONS
+        ================================================= */}
 
         <div className="hmi-physical-buttons">
 
-          <button>F1</button>
-          <button>F2</button>
-          <button>F3</button>
-          <button>F4</button>
-          <button>F5</button>
-          <button>F6</button>
+          <button type="button">
+            F1
+          </button>
+
+          <button type="button">
+            F2
+          </button>
+
+          <button type="button">
+            F3
+          </button>
+
+          <button type="button">
+            F4
+          </button>
+
+          <button type="button">
+            F5
+          </button>
+
+          <button type="button">
+            F6
+          </button>
 
         </div>
 
@@ -663,12 +979,20 @@ function HMIInterface({ asset, process }) {
           6AV2 124-0MC01-0AX0
         </div>
 
+
       </div>
 
 
+      {/* =================================================
+          HMI INFORMATION
+      ================================================= */}
+
       <div className="hmi-info">
 
-        <IndustrialPanel title="HMI COMMUNICATION">
+
+        <IndustrialPanel
+          title="HMI COMMUNICATION"
+        >
 
           <ValueRow
             label="IP Address"
@@ -692,7 +1016,10 @@ function HMIInterface({ asset, process }) {
 
         </IndustrialPanel>
 
-        <IndustrialPanel title="OPERATOR SESSION">
+
+        <IndustrialPanel
+          title="OPERATOR SESSION"
+        >
 
           <ValueRow
             label="User"
@@ -711,12 +1038,15 @@ function HMIInterface({ asset, process }) {
 
         </IndustrialPanel>
 
+
       </div>
 
-    </div>
-  );
-}
 
+    </div>
+
+  );
+
+}
 
 /* =========================================================
    SCADA
