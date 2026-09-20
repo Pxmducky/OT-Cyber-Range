@@ -3,6 +3,57 @@ from simulation.equipment import (
     EquipmentStatus,
 )
 
+# ---------------------------------------------------------------------------
+# PROGRAMA PLC LEGÍTIMO DE REFERENCIA
+# Acciones aceptables: control térmico, alivio de presión, alarmas de proceso
+# Rangos seguros: Motor 500-1450 RPM | Válvula 10-90 % | Temp 60-80 °C | Presión 3.0-4.5 bar
+# ---------------------------------------------------------------------------
+LEGITIMATE_PROGRAM = """\
+PROGRAM MAIN
+NETWORK 1
+IF TEMPERATURE >= 75 THEN
+  MOTOR_SPEED := 1200;
+END_IF
+NETWORK 2
+IF TEMPERATURE < 65 THEN
+  MOTOR_SPEED := 1450;
+END_IF
+NETWORK 3
+IF PRESSURE > 4.2 THEN
+  VALVE_POSITION := 70;
+END_IF
+NETWORK 4
+IF PRESSURE < 3.2 THEN
+  VALVE_POSITION := 35;
+END_IF
+NETWORK 5
+IF TEMPERATURE >= 78 THEN
+  ALARM := TRUE;
+END_IF
+NETWORK 6
+IF TEMPERATURE < 75 THEN
+  ALARM := FALSE;
+END_IF"""
+
+# ---------------------------------------------------------------------------
+# PROGRAMA PLC MALICIOSO — LO QUE UN ATACANTE INYECTA
+# Paro de emergencia + válvula totalmente abierta + supresión de alarmas
+# ---------------------------------------------------------------------------
+MALICIOUS_PROGRAM = """\
+PROGRAM MAIN
+NETWORK 1
+IF START THEN
+  MOTOR_SPEED := 0;
+END_IF
+NETWORK 2
+IF START THEN
+  VALVE_POSITION := 100;
+END_IF
+NETWORK 3
+IF ALARM THEN
+  ALARM := FALSE;
+END_IF"""
+
 from simulation.plc import PLC
 from simulation.process import ProcessState
 from simulation.events import OTEvent
@@ -747,6 +798,292 @@ class Plant:
                 f"{new_status.value}"
             ),
         )
+
+    # =========================================================
+    # ATTACK ENGINE — MÉTODOS DE SIMULACIÓN DE ATAQUES
+    # =========================================================
+
+    def execute_attack(self, attack_type: str) -> dict:
+        """Ejecuta un escenario de ataque educativo y devuelve resultado + salida terminal."""
+        from simulation.attack_engine import AttackEngine, SCENARIOS
+
+        if attack_type not in SCENARIOS:
+            raise ValueError(f"Ataque desconocido: {attack_type}")
+
+        engine = AttackEngine(self)
+        terminal = engine.terminal_output(attack_type)
+
+        dispatch = {
+            "port_scan":     self._attack_port_scan,
+            "s7_enum":       self._attack_s7_enum,
+            "plc_inject":    self._attack_plc_inject,
+            "hmi_exploit":   self._attack_hmi_exploit,
+            "scada_dos":     self._attack_scada_dos,
+            "full_sabotage": self._attack_full_sabotage,
+        }
+
+        effects = dispatch[attack_type]()
+
+        return {
+            "attack_type": attack_type,
+            "scenario": SCENARIOS[attack_type],
+            "terminal_output": terminal,
+            "effects": effects,
+            "plant_state": self.get_state(),
+        }
+
+    def _attack_port_scan(self) -> list[str]:
+        """Reconocimiento de red — solo genera eventos en el SIEM."""
+        self.add_event(
+            "NETWORK_SCAN_DETECTED", "HIGH", "NETWORK",
+            "Escaneo de puertos detectado desde 192.168.1.100 "
+            "— activos OT expuestos en red plana",
+        )
+        self.add_event(
+            "RECON_ALERT", "MEDIUM", "IDS",
+            "SYN scan sigiloso en puertos industriales 102, 502, 44818, 4840",
+        )
+        return ["SIEM_ALERT", "NETWORK_SCAN_LOGGED"]
+
+    def _attack_s7_enum(self) -> list[str]:
+        """Enumeración S7comm — exfiltra datos de proceso sin autenticación."""
+        self.add_event(
+            "S7COMM_UNAUTHORIZED_ACCESS", "CRITICAL", "PLC-001",
+            "Acceso S7comm no autorizado desde 192.168.1.100 "
+            "— datos de proceso exfiltrados",
+        )
+        self.add_event(
+            "PLC_DATA_EXFILTRATION", "HIGH", "PLC-001",
+            f"Datos leídos: T={self.process.temperature:.1f}°C "
+            f"P={self.process.pressure:.2f}bar "
+            f"Motor={self.process.motor_speed:.0f}RPM",
+        )
+        self.alarm_manager.trigger(
+            "S7_RECON", "HIGH", "PLC-001",
+            "Acceso de lectura S7comm no autenticado — datos de proceso robados",
+        )
+        return ["PLC_DATA_EXFILTRATED", "SIEM_ALERT"]
+
+    def _attack_plc_inject(self) -> list[str]:
+        """
+        Inyección de código malicioso al PLC vía S7comm.
+        Bypasea el validador (simula que el atacante tiene acceso directo al PLC).
+        Efectos: paro de motor, válvula totalmente abierta, supresión de alarmas.
+        """
+        # 1. Cargar programa malicioso bypasseando el validador
+        self.plc_program.source = MALICIOUS_PROGRAM
+        self.plc_program.version += 1
+        self.plc_program.status = "COMPROMISED"
+        self.plc_program.running = True
+        self.plc_program.last_error = "Código malicioso inyectado via S7comm no autenticado"
+
+        # 2. Aplicar efectos físicos directamente
+        self.process.change_motor_speed(0)
+        self.plc.write_register("motor_speed", 0)
+
+        self.process.change_valve_position(100)
+        self.plc.write_register("valve_position", 100)
+
+        # 3. Marcar PLC como comprometido
+        plc_eq = self.get_equipment("PLC-001")
+        if plc_eq:
+            plc_eq.set_status(EquipmentStatus.COMPROMISED)
+
+        motor_eq = self.get_equipment("M-001")
+        if motor_eq:
+            motor_eq.set_status(EquipmentStatus.OFFLINE)
+
+        valve_eq = self.get_equipment("V-001")
+        if valve_eq:
+            valve_eq.set_status(EquipmentStatus.WARNING)
+
+        # 4. Disparar alarmas críticas
+        self.alarm_manager.trigger(
+            "CODE_INJECTION", "CRITICAL", "PLC-001",
+            "Lógica escalera maliciosa inyectada via S7comm — "
+            "enclavamientos de seguridad DESHABILITADOS",
+        )
+        self.alarm_manager.trigger(
+            "MOTOR_SABOTAGE", "CRITICAL", "M-001",
+            "Motor forzado a 0 RPM por programa PLC malicioso — "
+            "producción PARADA",
+        )
+        self.alarm_manager.trigger(
+            "VALVE_SABOTAGE", "CRITICAL", "V-001",
+            "Válvula forzada a 100% por programa PLC malicioso — "
+            "pérdida de fluido de proceso",
+        )
+        self.alarm_manager.trigger(
+            "SAFETY_SUPPRESSED", "CRITICAL", "PLC-001",
+            "Rutina de supresión de alarmas activa — "
+            "operadores NO ven el estado real del proceso",
+        )
+
+        # 5. Eventos SIEM
+        self.add_event(
+            "PLC_CODE_INJECTION", "CRITICAL", "PLC-001",
+            "Bloque OB1 malicioso descargado via sesión S7comm no autorizada",
+        )
+        self.add_event(
+            "SAFETY_INTERLOCK_BYPASS", "CRITICAL", "PLC-001",
+            "Enclavamientos de seguridad deshabilitados — "
+            "rutina de supresión de alarmas activa",
+        )
+        self.add_event(
+            "PRODUCTION_SABOTAGE", "CRITICAL", "M-001",
+            "Motor parado de emergencia por código inyectado — producción PERDIDA",
+        )
+        self.add_event(
+            "PROCESS_FLUID_LOSS", "CRITICAL", "V-001",
+            "Válvula completamente abierta — pérdida de fluido de proceso",
+        )
+
+        return ["PLC_COMPROMISED", "MOTOR_STOPPED", "VALVE_OPEN", "ALARMS_SUPPRESSED"]
+
+    def _attack_hmi_exploit(self) -> list[str]:
+        """Explotación del HMI via EternalBlue — obtiene acceso SYSTEM."""
+        hmi = self.get_equipment("HMI-001")
+        if hmi:
+            hmi.set_status(EquipmentStatus.COMPROMISED)
+
+        self.alarm_manager.trigger(
+            "HMI_COMPROMISE", "CRITICAL", "HMI-001",
+            "Workstation HMI comprometida via CVE-2017-0144 (EternalBlue) "
+            "— acceso SYSTEM obtenido",
+        )
+
+        self.add_event(
+            "HMI_EXPLOITATION", "CRITICAL", "HMI-001",
+            "Exploit EternalBlue exitoso — acceso SYSTEM en HMI de operador",
+        )
+        self.add_event(
+            "CREDENTIAL_THEFT", "CRITICAL", "HMI-001",
+            "Credenciales WinCC SCADA extraídas por atacante: scada_operator/Siemens2024!",
+        )
+
+        return ["HMI_COMPROMISED", "CREDENTIALS_STOLEN"]
+
+    def _attack_scada_dos(self) -> list[str]:
+        """DoS contra el servidor SCADA — supervisión offline."""
+        scada = self.get_equipment("SCADA-001")
+        if scada:
+            scada.set_status(EquipmentStatus.OFFLINE)
+
+        self.alarm_manager.trigger(
+            "SCADA_OFFLINE", "CRITICAL", "SCADA-001",
+            "Servidor SCADA no responde — control supervisorio PERDIDO",
+        )
+
+        self.add_event(
+            "OPCUA_DOS", "CRITICAL", "SCADA-001",
+            "Servicio OPC-UA no disponible — 50,000 peticiones malformadas/minuto",
+        )
+        self.add_event(
+            "SUPERVISORY_CONTROL_LOST", "CRITICAL", "SCADA-001",
+            "Operadores han perdido visibilidad del proceso — "
+            "control remoto IMPOSIBLE",
+        )
+
+        return ["SCADA_OFFLINE", "SUPERVISORY_CONTROL_LOST"]
+
+    def _attack_full_sabotage(self) -> list[str]:
+        """
+        Sabotaje total multi-vector:
+        - Inyección de código PLC
+        - Sobrescritura directa de temperatura y presión a valores críticos
+        - Explotación de HMI y SCADA
+        - Todos los activos marcados como comprometidos
+        """
+        # Vector 1: código PLC
+        self._attack_plc_inject()
+
+        # Vector 2: HMI
+        self._attack_hmi_exploit()
+
+        # Vector 3: SCADA
+        self._attack_scada_dos()
+
+        # Vector 4: Forzar valores de proceso a niveles críticos
+        # (bypass directo de registros — imposible desde código PLC normal)
+        self.process.temperature = 95.0
+        self.process.pressure = 6.2
+        self.plc.write_register("temperature", 95.0)
+        self.plc.write_register("pressure", 6.2)
+
+        # Marcar resto del equipamiento comprometido
+        for asset_id in ["GW-001", "ENG-001", "CNC-001"]:
+            eq = self.get_equipment(asset_id)
+            if eq:
+                eq.set_status(EquipmentStatus.COMPROMISED)
+
+        # Alarmas adicionales de proceso crítico
+        self.alarm_manager.trigger(
+            "CRITICAL_TEMPERATURE", "CRITICAL", "TT-001",
+            "Temperatura 95.0°C — límite crítico superado (seguro: 80°C)",
+        )
+        self.alarm_manager.trigger(
+            "CRITICAL_PRESSURE", "CRITICAL", "PT-001",
+            "Presión 6.2 bar — límite del recipiente superado (seguro: 4.5 bar)",
+        )
+        self.alarm_manager.trigger(
+            "PLANT_FULLY_COMPROMISED", "CRITICAL", "OT-CYBER-RANGE",
+            "TODOS LOS ACTIVOS OT COMPROMETIDOS — ataque multi-vector en curso",
+        )
+
+        self.add_event(
+            "FULL_PLANT_SABOTAGE", "CRITICAL", "OT-CYBER-RANGE",
+            "Ataque coordinado multi-vector: inyección de código + "
+            "sobrescritura de registros + movimiento lateral",
+        )
+        self.add_event(
+            "PHYSICAL_DAMAGE_IMMINENT", "CRITICAL", "OT-CYBER-RANGE",
+            "Proceso en estado CRÍTICO — T=95°C P=6.2bar — "
+            "riesgo de daño físico INMINENTE",
+        )
+
+        return [
+            "FULL_COMPROMISE", "CRITICAL_TEMPERATURE", "CRITICAL_PRESSURE",
+            "ALL_ASSETS_COMPROMISED",
+        ]
+
+    def restore_plant(self) -> dict:
+        """Restaura la planta a estado operativo normal tras un escenario de ataque."""
+        # Proceso
+        self.process.temperature = 68.0
+        self.process.pressure = 3.8
+        self.process.motor_speed = 1450.0
+        self.process.valve_position = 50.0
+        self.process.production_running = True
+        self.process.production_rate = 100.0
+        self.process.process_alarm = False
+
+        # PLC
+        self.plc.run()
+        self.plc.write_register("motor_speed", 1450.0)
+        self.plc.write_register("valve_position", 50.0)
+        self.plc.write_register("temperature", 68.0)
+        self.plc.write_register("pressure", 3.8)
+
+        # Programa PLC
+        self.plc_program.source = ""
+        self.plc_program.status = "NOT_LOADED"
+        self.plc_program.running = False
+        self.plc_program.last_error = ""
+        self.plc_runtime.flags["ALARM"] = False
+
+        # Equipos — todos de vuelta a ONLINE
+        for equipment in self.equipment:
+            equipment.set_status(EquipmentStatus.ONLINE)
+
+        # Limpiar todas las alarmas
+        self.alarm_manager.alarms.clear()
+
+        self.add_event(
+            "PLANT_RESTORED", "INFO", "OT-CYBER-RANGE",
+            "Planta restaurada a estado operativo normal tras escenario de ataque",
+        )
+
+        return self.get_state()
 
     # =========================================================
     # INVENTORY

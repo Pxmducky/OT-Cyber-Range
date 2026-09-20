@@ -24,6 +24,7 @@ import "./App.css";
 import PhysicalPlant from "./components/PhysicalPlant";
 import PurduePage from "./components/PurduePage";
 import SIEMPage from "./components/SIEMPage";
+import AttackerConsole from "./components/AttackerConsole";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -44,7 +45,7 @@ function AlarmBanner({ alarms = [] }) {
   const activeAlarm =
     alarms.find(
       alarm =>
-        alarm.status === "ACTIVE" &&
+        alarm.active === true &&
         alarm.severity === "CRITICAL"
     );
 
@@ -52,6 +53,8 @@ function AlarmBanner({ alarms = [] }) {
 
     if (!audioContextRef.current) {
 
+      // Sirena industrial: oscilador principal + LFO de barrido de frecuencia
+      // Produce el sonido klaxon característico de alarmas industriales (800–1100 Hz)
       audioContextRef.current =
         new (
           window.AudioContext ||
@@ -61,16 +64,25 @@ function AlarmBanner({ alarms = [] }) {
       const context =
         audioContextRef.current;
 
+      // Ganancia principal — volumen audible de verdad
       gainRef.current =
         context.createGain();
 
       gainRef.current.gain.value =
-        0.0001;
+        0.35;
 
       gainRef.current.connect(
         context.destination
       );
 
+      // LFO (Low Frequency Oscillator) para modular la frecuencia
+      const lfo = context.createOscillator();
+      const lfoGain = context.createGain();
+      lfo.frequency.value = 0.8; // Ciclos por segundo (velocidad del barrido)
+      lfoGain.gain.value = 280;   // Rango de barrido: ±280 Hz sobre la frecuencia base
+      lfo.connect(lfoGain);
+
+      // Oscilador principal: sawtooth (sonido áspero industrial)
       oscillatorRef.current =
         context.createOscillator();
 
@@ -78,12 +90,16 @@ function AlarmBanner({ alarms = [] }) {
         "sawtooth";
 
       oscillatorRef.current.frequency.value =
-        700;
+        820; // Frecuencia base
+
+      // Conectar LFO → modulación de frecuencia del oscilador principal
+      lfoGain.connect(oscillatorRef.current.frequency);
 
       oscillatorRef.current.connect(
         gainRef.current
       );
 
+      lfo.start();
       oscillatorRef.current.start();
     }
 
@@ -456,8 +472,26 @@ function App() {
    * =========================================================
    */
 
+  // Detectar alarmas críticas activas para el modo de emergencia visual
+  const hasCriticalAlarm = alarms.some(
+    a => a.active === true && a.severity === "CRITICAL"
+  );
+
   return (
-  <div className="app">
+  <div className={hasCriticalAlarm ? "app cyber-incident" : "app"}>
+
+    {/* Overlay rojo pulsante cuando hay ataque en curso */}
+    {hasCriticalAlarm && (
+      <div style={{
+        position:       "fixed",
+        inset:          0,
+        pointerEvents:  "none",
+        zIndex:         9998,
+        animation:      "cyber-flash 0.9s ease-in-out infinite",
+        border:         "3px solid rgba(239,68,68,0.8)",
+        boxShadow:      "inset 0 0 60px rgba(239,68,68,0.15)",
+      }} />
+    )}
 
     <AlarmBanner
       alarms={alarms}
@@ -732,8 +766,9 @@ function App() {
 
         {activePage === "attacker" && (
 
-          <PlaceholderPage
-            page="attacker"
+          <AttackerConsole
+            plant={plant}
+            alarms={plant?.alarms?.active ?? []}
           />
 
         )}
@@ -1704,5 +1739,3 @@ function PlaceholderPage({
 
 
 export default App;
-
-

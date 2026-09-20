@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from simulation.plant import Plant
+from simulation.attack_engine import SCENARIOS
 
 
 app = FastAPI(
@@ -30,6 +31,9 @@ class PLCProgramRequest(BaseModel):
 
 class AlarmActionRequest(BaseModel):
     alarm_id: str
+
+class AttackRequest(BaseModel):
+    attack_type: str
 
 @app.get("/")
 def root():
@@ -171,6 +175,36 @@ def stop_plc_program():
 def reset_plc_program():
     return plant.reset_plc_program()
 
+
+# =====================================================================
+# ATTACK ENGINE ENDPOINTS
+# =====================================================================
+
+@app.get("/api/attack/scenarios")
+def get_attack_scenarios():
+    """Lista todos los escenarios de ataque disponibles."""
+    return SCENARIOS
+
+
+@app.post("/api/attack/execute")
+def execute_attack(request: AttackRequest):
+    """
+    Ejecuta un escenario de ataque educativo sobre la simulación.
+    Devuelve la salida de terminal y el nuevo estado de la planta.
+    """
+    try:
+        return plant.execute_attack(request.attack_type)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.post("/api/plant/restore")
+def restore_plant():
+    """Restaura la planta a estado operativo normal tras un escenario de ataque."""
+    return plant.restore_plant()
+
+
+# =====================================================================
 
 @app.websocket("/ws/plant")
 async def plant_websocket(websocket: WebSocket):
