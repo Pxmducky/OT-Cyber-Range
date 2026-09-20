@@ -1,104 +1,148 @@
 import asyncio
 
 from fastapi import FastAPI, WebSocket, HTTPException
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from simulation.plant import Plant
 
 
 app = FastAPI(
-
     title="OT Cyber Range",
-
-    description=
-        "Industrial OT Cyber Range Simulation",
-
-    version="1.0.0"
-
+    description="Industrial OT Cyber Range Simulation",
+    version="1.0.0",
 )
 
-class PLCProgramRequest(BaseModel):
-    source: str
-
-
-
 app.add_middleware(
-
     CORSMiddleware,
-
     allow_origins=["*"],
-
     allow_credentials=True,
-
     allow_methods=["*"],
-
     allow_headers=["*"],
-
 )
 
 
 plant = Plant()
 
 
+class PLCProgramRequest(BaseModel):
+    source: str
+
+class AlarmActionRequest(BaseModel):
+    alarm_id: str
+
 @app.get("/")
 def root():
-
     return {
-
-        "application":
-            "OT Cyber Range",
-
-        "status":
-            "ONLINE",
-
-        "simulation":
-            "RUNNING",
-
+        "application": "OT Cyber Range",
+        "status": "ONLINE",
+        "simulation": "RUNNING",
     }
 
 
 @app.get("/api/plant")
 def get_plant():
-
     return plant.get_state()
 
 
 @app.get("/api/plc")
 def get_plc():
-
     return plant.plc.get_state()
+
+
+@app.get("/api/events")
+def get_events():
+    return [event.to_dict() for event in plant.events[-50:]]
+
+
+@app.get("/api/inventory")
+def get_inventory():
+    return plant.get_inventory()
+
+
+@app.get("/api/alarms")
+def get_alarms():
+    return plant.get_alarms()
+
+
+@app.post("/api/alarms/acknowledge")
+def acknowledge_alarm(request: AlarmActionRequest):
+    try:
+        return plant.acknowledge_alarm(request.alarm_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+
+@app.post("/api/alarms/reset")
+def reset_alarm(request: AlarmActionRequest):
+    try:
+        return plant.reset_alarm(request.alarm_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+
+@app.post("/api/plant/motor")
+def change_motor(speed: float):
+    plant.change_motor_speed(speed)
+    return plant.get_state()
+
+
+@app.post("/api/plant/valve")
+def change_valve(position: float):
+    plant.change_valve_position(position)
+    return plant.get_state()
+
+
+@app.post("/api/plant/stop")
+def stop_production():
+    plant.stop_production()
+    return plant.get_state()
+
+
+@app.post("/api/plant/resume")
+def resume_production():
+    plant.resume_production()
+    return plant.get_state()
+
+
+@app.post("/api/plc/run")
+def run_plc():
+    plant.run_plc()
+    return plant.get_state()
+
+
+@app.post("/api/plc/stop")
+def stop_plc():
+    plant.stop_plc()
+    return plant.get_state()
+
+
+@app.post("/api/plc/reset")
+def reset_plc():
+    plant.plc_runtime.reset()
+    plant.alarm_manager.reset_all()
+    plant.plc.run()
+    plant.process.resume()
+    plant.add_event(
+        "PLC_RESET", "INFO", "PLC-001", "PLC reset executed"
+    )
+    return plant.get_state()
+
 
 @app.get("/api/plc/program")
 def get_plc_program():
-
     return plant.get_plc_program()
 
 
 @app.post("/api/plc/program/validate")
-def validate_plc_program(
-    request: PLCProgramRequest
-):
-
-    errors = plant.validate_plc_program(
-        request.source
-    )
-
-    return {
-        "valid": len(errors) == 0,
-        "errors": errors,
-    }
+def validate_plc_program(request: PLCProgramRequest):
+    errors = plant.validate_plc_program(request.source)
+    return {"valid": len(errors) == 0, "errors": errors}
 
 
 @app.post("/api/plc/program/download")
-def download_plc_program(
-    request: PLCProgramRequest
-):
-
-    errors = plant.load_plc_program(
-        request.source
-    )
-
+def download_plc_program(request: PLCProgramRequest):
+    errors = plant.load_plc_program(request.source)
     if errors:
         raise HTTPException(
             status_code=422,
@@ -107,172 +151,29 @@ def download_plc_program(
                 "errors": errors,
             },
         )
-
     return plant.get_plc_program()
 
 
 @app.post("/api/plc/program/run")
 def run_plc_program():
-
     try:
         return plant.run_plc_program()
-
     except ValueError as error:
-        raise HTTPException(
-            status_code=409,
-            detail=str(error),
-        )
+        raise HTTPException(status_code=409, detail=str(error))
 
 
 @app.post("/api/plc/program/stop")
 def stop_plc_program():
-
     return plant.stop_plc_program()
 
 
 @app.post("/api/plc/program/reset")
 def reset_plc_program():
-
     return plant.reset_plc_program()
 
 
-@app.post("/api/plc/run")
-def run_plc():
-
-    plant.run_plc()
-
-    return plant.get_state()
-
-
-@app.post("/api/plc/stop")
-def stop_plc():
-
-    plant.stop_plc()
-
-    return plant.get_state()
-
-
-@app.post("/api/plc/reset")
-def reset_plc():
-
-    plant.run_plc()
-
-    plant.add_event(
-        event_type="PLC_RESET",
-        severity="INFO",
-        source="PLC-001",
-        message="PLC reset executed"
-    )
-
-    return plant.get_state()
-
-
-@app.post("/api/hmi/start")
-def start_hmi():
-
-    plant.resume_production()
-
-    plant.add_event(
-        event_type="HMI_START",
-        severity="INFO",
-        source="HMI-001",
-        message="Production START command issued from HMI"
-    )
-
-    return plant.get_state()
-
-
-@app.post("/api/hmi/stop")
-def stop_hmi():
-
-    plant.stop_production()
-
-    plant.add_event(
-        event_type="HMI_STOP",
-        severity="HIGH",
-        source="HMI-001",
-        message="Production STOP command issued from HMI"
-    )
-
-    return plant.get_state()
-
-
-@app.post("/api/hmi/reset")
-def reset_hmi():
-
-    plant.resume_production()
-
-    plant.add_event(
-        event_type="HMI_RESET",
-        severity="INFO",
-        source="HMI-001",
-        message="HMI reset command executed"
-    )
-
-    return plant.get_state()
-
-@app.get("/api/events")
-def get_events():
-
-    return [
-
-        event.to_dict()
-
-        for event
-        in plant.events[-50:]
-
-    ]
-    
-@app.get("/api/inventory")
-def get_inventory():
-
-    return plant.get_inventory()
-
-
-@app.post("/api/plant/motor")
-def change_motor(
-    speed: float
-):
-
-    plant.change_motor_speed(
-        speed
-    )
-
-    return plant.get_state()
-
-
-@app.post("/api/plant/valve")
-def change_valve(
-    position: float
-):
-
-    plant.change_valve_position(
-        position
-    )
-
-    return plant.get_state()
-
-
-@app.post("/api/plant/stop")
-def stop_production():
-
-    plant.stop_production()
-
-    return plant.get_state()
-
-
-@app.post("/api/plant/resume")
-def resume_production():
-
-    plant.resume_production()
-
-    return plant.get_state()
-
-
 @app.websocket("/ws/plant")
-async def plant_websocket(
-    websocket: WebSocket
-):
+async def plant_websocket(websocket: WebSocket):
 
     await websocket.accept()
 
@@ -288,6 +189,9 @@ async def plant_websocket(
 
             await asyncio.sleep(1)
 
-    except Exception:
+    except Exception as error:
 
-        pass
+        print(
+            "WEBSOCKET ERROR:",
+            repr(error)
+        )

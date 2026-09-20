@@ -170,8 +170,21 @@ class PLCRuntime:
             elif variable == "ALARM":
                 new_alarm = bool(value)
                 if new_alarm and not self.flags["ALARM"]:
-                    self.plant.add_event(
-                        "PLC_PROGRAM_ALARM", "HIGH", "PLC-001",
-                        "PLC program asserted ALARM",
+                    self.plant.alarm_manager.trigger(
+                        alarm_id="PLC_PROGRAM_ALARM",
+                        severity="CRITICAL",
+                        source="PLC-001",
+                        message=(
+                            "PLC program asserted ALARM"
+                            f" - Temperature {self.plant.process.temperature:.1f} °C"
+                        ),
                     )
+                elif not new_alarm and self.flags["ALARM"]:
+                    alarm = self.plant.alarm_manager.alarms.get(
+                        "PLC_PROGRAM_ALARM"
+                    )
+                    if alarm and alarm.active:
+                        self.plant.alarm_manager.reset(
+                            "PLC_PROGRAM_ALARM"
+                        )
                 self.flags["ALARM"] = new_alarm

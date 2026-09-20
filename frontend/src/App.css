@@ -5865,4 +5865,235 @@ button {
     flex: 1;
   }
 
+  /* =========================================================
+   CRITICAL OT ALARM
+========================================================= */
+
+.critical-alarm-banner {
+
+  position: sticky;
+
+  top: 0;
+
+  z-index: 9999;
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 16px;
+
+  padding: 14px 18px;
+
+  background:
+    linear-gradient(
+      90deg,
+      #450000,
+      #8b0000,
+      #450000
+    );
+
+  border-bottom:
+    2px solid #ff0000;
+
+  box-shadow:
+    0 0 25px
+    rgba(255, 0, 0, 0.55);
+
+  animation:
+    criticalAlarmFlash
+    0.9s infinite;
+}
+
+
+@keyframes criticalAlarmFlash {
+
+  0%,
+  100% {
+    box-shadow:
+      0 0 12px
+      rgba(255, 0, 0, 0.45);
+  }
+
+  50% {
+    box-shadow:
+      0 0 35px
+      rgba(255, 0, 0, 0.95);
+  }
+
+}
+
+
+.critical-alarm-icon {
+
+  width: 46px;
+
+  height: 46px;
+
+  display: grid;
+
+  place-items: center;
+
+  color: white;
+
+  background: #ff0000;
+
+  border-radius: 50%;
+
+  animation:
+    alarmIconFlash
+    0.7s infinite;
+}
+
+
+@keyframes alarmIconFlash {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+
+}
+
+
+.critical-alarm-content {
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 3px;
+
+  flex: 1;
+
+  color: white;
+
+}
+
+
+.critical-alarm-content strong {
+
+  font-size: 15px;
+
+  letter-spacing: 1px;
+
+  color: #ffffff;
+
+}
+
+
+.critical-alarm-content span {
+
+  font-family: monospace;
+
+  font-size: 12px;
+
+  color: #ffe5e5;
+
+}
+
+
+.critical-alarm-content small {
+
+  font-family: monospace;
+
+  font-size: 9px;
+
+  color: #ffb3b3;
+
+}
+
+
+.critical-alarm-status {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 8px;
+
+}
+
+
+.critical-alarm-status span {
+
+  font-family: monospace;
+
+  font-size: 10px;
+
+  font-weight: bold;
+
+  color: white;
+
+}
+
+
+.critical-alarm-status button {
+
+  border: 1px solid
+    rgba(255,255,255,0.35);
+
+  background:
+    rgba(0,0,0,0.35);
+
+  color: white;
+
+  padding: 8px 12px;
+
+  font-family: monospace;
+
+  font-size: 10px;
+
+  font-weight: bold;
+
+  cursor: pointer;
+
+}
+
+
+.critical-alarm-status button:hover {
+
+  background:
+    rgba(255,255,255,0.18);
+
+}
+
+
+.alarm-audio-control {
+
+  position: fixed;
+
+  bottom: 18px;
+
+  right: 18px;
+
+  z-index: 9998;
+
+}
+
+
+.alarm-enable-button {
+
+  padding: 10px 14px;
+
+  border: 1px solid #ff4444;
+
+  background: #280000;
+
+  color: #ff6666;
+
+  font-family: monospace;
+
+  font-size: 10px;
+
+  font-weight: bold;
+
+  cursor: pointer;
+
+}
+
 }

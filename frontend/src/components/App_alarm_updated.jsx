@@ -1,8 +1,4 @@
-import {
-  useEffect,
-  useState,
-  useRef,
-} from "react";
+import { useEffect, useState, useRef } from "react";
 
 import {
   Activity,
@@ -27,262 +23,12 @@ import SIEMPage from "./components/SIEMPage";
 
 const API_URL = "http://127.0.0.1:8000";
 
-function AlarmBanner({ alarms = [] }) {
-
-  const [audioEnabled, setAudioEnabled] =
-    useState(false);
-
-  const audioContextRef =
-    useRef(null);
-
-  const oscillatorRef =
-    useRef(null);
-
-  const gainRef =
-    useRef(null);
-
-  const activeAlarm =
-    alarms.find(
-      alarm =>
-        alarm.status === "ACTIVE" &&
-        alarm.severity === "CRITICAL"
-    );
-
-  const startSiren = async () => {
-
-    if (!audioContextRef.current) {
-
-      audioContextRef.current =
-        new (
-          window.AudioContext ||
-          window.webkitAudioContext
-        )();
-
-      const context =
-        audioContextRef.current;
-
-      gainRef.current =
-        context.createGain();
-
-      gainRef.current.gain.value =
-        0.0001;
-
-      gainRef.current.connect(
-        context.destination
-      );
-
-      oscillatorRef.current =
-        context.createOscillator();
-
-      oscillatorRef.current.type =
-        "sawtooth";
-
-      oscillatorRef.current.frequency.value =
-        700;
-
-      oscillatorRef.current.connect(
-        gainRef.current
-      );
-
-      oscillatorRef.current.start();
-    }
-
-    await audioContextRef.current.resume();
-
-    setAudioEnabled(true);
-  };
-
-  const stopSiren = () => {
-
-    if (gainRef.current) {
-
-      gainRef.current.gain.setTargetAtTime(
-        0.0001,
-        audioContextRef.current.currentTime,
-        0.05
-      );
-    }
-  };
-
-  useEffect(() => {
-
-    if (
-      activeAlarm &&
-      audioEnabled &&
-      gainRef.current &&
-      audioContextRef.current
-    ) {
-
-      const context =
-        audioContextRef.current;
-
-      const gain =
-        gainRef.current;
-
-      const oscillator =
-        oscillatorRef.current;
-
-      gain.gain.setTargetAtTime(
-        0.12,
-        context.currentTime,
-        0.03
-      );
-
-      oscillator.frequency.setValueAtTime(
-        700,
-        context.currentTime
-      );
-
-      oscillator.frequency.linearRampToValueAtTime(
-        1100,
-        context.currentTime + 0.45
-      );
-
-      oscillator.frequency.linearRampToValueAtTime(
-        700,
-        context.currentTime + 0.9
-      );
-
-    } else {
-
-      stopSiren();
-    }
-
-  }, [activeAlarm, audioEnabled]);
-
-  const acknowledgeAlarm = async () => {
-
-    if (!activeAlarm) {
-      return;
-    }
-
-    stopSiren();
-
-    await fetch(
-      `${API_URL}/api/alarms/acknowledge`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-        body: JSON.stringify({
-          alarm_id:
-            activeAlarm.alarm_id,
-        }),
-      }
-    );
-  };
-
-  const resetAlarm = async () => {
-
-    if (!activeAlarm) {
-      return;
-    }
-
-    stopSiren();
-
-    await fetch(
-      `${API_URL}/api/alarms/reset`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-        body: JSON.stringify({
-          alarm_id:
-            activeAlarm.alarm_id,
-        }),
-      }
-    );
-  };
-
-  if (!activeAlarm) {
-
-    return (
-      <div className="alarm-audio-control">
-
-        {!audioEnabled && (
-          <button
-            onClick={startSiren}
-            className="alarm-enable-button"
-          >
-            ENABLE ALARM AUDIO
-          </button>
-        )}
-
-      </div>
-    );
-  }
-
-  return (
-
-    <div className="critical-alarm-banner">
-
-      <div className="critical-alarm-icon">
-        <AlertTriangle size={28} />
-      </div>
-
-      <div className="critical-alarm-content">
-
-        <strong>
-          CRITICAL OT ALARM
-        </strong>
-
-        <span>
-          {activeAlarm.source}
-          {" — "}
-          {activeAlarm.message}
-        </span>
-
-        <small>
-          {activeAlarm.timestamp}
-        </small>
-
-      </div>
-
-      <div className="critical-alarm-status">
-
-        <span>
-          {audioEnabled
-            ? "🔊 SIREN ACTIVE"
-            : "AUDIO DISABLED"}
-        </span>
-
-        <button
-          onClick={startSiren}
-        >
-          ENABLE AUDIO
-        </button>
-
-        <button
-          onClick={acknowledgeAlarm}
-        >
-          ACKNOWLEDGE
-        </button>
-
-        <button
-          onClick={resetAlarm}
-        >
-          RESET
-        </button>
-
-      </div>
-
-    </div>
-  );
-}
-
 
 function App() {
 
   const [plant, setPlant] = useState(null);
   const [activePage, setActivePage] = useState("plant");
   const [connected, setConnected] = useState(false);
-
-  const [alarms, setAlarms] =
-  useState([]);
 
 
   /*
@@ -380,53 +126,6 @@ function App() {
 
   }, []);
 
-  useEffect(() => {
-
-    const loadAlarms = async () => {
-  
-      try {
-  
-        const response =
-          await fetch(
-            `${API_URL}/api/alarms`
-          );
-  
-        if (!response.ok) {
-          return;
-        }
-  
-        const data =
-          await response.json();
-  
-        setAlarms(
-          data.alarms || []
-        );
-  
-      } catch (error) {
-  
-        console.error(
-          "Alarm API error:",
-          error
-        );
-  
-      }
-  
-    };
-  
-    loadAlarms();
-  
-    const interval =
-      setInterval(
-        loadAlarms,
-        500
-      );
-  
-    return () => {
-      clearInterval(interval);
-    };
-  
-  }, []);
-
 
   /*
    * =========================================================
@@ -449,6 +148,119 @@ function App() {
   const equipment =
     plant?.equipment || [];
 
+  const alarms = plant?.alarms?.active || [];
+
+  const audioContextRef = useRef(null);
+  const sirenRef = useRef(null);
+  const audioPrimedRef = useRef(false);
+
+  useEffect(() => {
+    const primeAudio = async () => {
+      try {
+        const AudioContext =
+          window.AudioContext || window.webkitAudioContext;
+
+        if (!AudioContext) return;
+
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioContext();
+        }
+
+        if (audioContextRef.current.state === "suspended") {
+          await audioContextRef.current.resume();
+        }
+
+        audioPrimedRef.current = true;
+      } catch (error) {
+        console.warn("Alarm audio unavailable:", error);
+      }
+    };
+
+    document.addEventListener("click", primeAudio);
+
+    return () => {
+      document.removeEventListener("click", primeAudio);
+    };
+  }, []);
+
+  useEffect(() => {
+    const criticalAlarm = alarms.find(
+      alarm =>
+        alarm.severity === "CRITICAL" &&
+        alarm.active &&
+        !alarm.acknowledged
+    );
+
+    const stopSiren = () => {
+      if (!sirenRef.current) return;
+
+      clearInterval(sirenRef.current.interval);
+
+      try {
+        sirenRef.current.oscillator.stop();
+      } catch {}
+
+      sirenRef.current = null;
+    };
+
+    if (!criticalAlarm || !audioPrimedRef.current) {
+      stopSiren();
+      return;
+    }
+
+    if (sirenRef.current) return;
+
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    oscillator.type = "square";
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    gain.gain.setValueAtTime(0.07, ctx.currentTime);
+    oscillator.start();
+
+    let high = false;
+
+    const toggle = () => {
+      high = !high;
+      oscillator.frequency.setValueAtTime(
+        high ? 880 : 520,
+        ctx.currentTime
+      );
+    };
+
+    toggle();
+    const interval = setInterval(toggle, 450);
+
+    sirenRef.current = { oscillator, gain, interval };
+
+    return stopSiren;
+  }, [alarms]);
+
+  const alarmAction = async (endpoint, alarmId) => {
+    try {
+      const response = await fetch(
+        `${API_URL}${endpoint}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ alarm_id: alarmId }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.error("Alarm action error:", error);
+    }
+  };
+
 
   /*
    * =========================================================
@@ -457,11 +269,63 @@ function App() {
    */
 
   return (
-  <div className="app">
 
-    <AlarmBanner
-      alarms={alarms}
-    />
+    <div className="app">
+
+      {alarms.length > 0 && (
+        <div className="ot-alarm-stack">
+          {alarms.slice(0, 3).map(alarm => (
+            <div
+              key={alarm.alarm_id}
+              className={
+                alarm.severity === "CRITICAL"
+                  ? "ot-alarm critical"
+                  : "ot-alarm"
+              }
+            >
+              <div className="ot-alarm-icon">
+                <AlertTriangle size={22} />
+              </div>
+
+              <div className="ot-alarm-content">
+                <strong>{alarm.severity} ALARM</strong>
+                <span>{alarm.message}</span>
+                <small>
+                  {alarm.source} · {alarm.timestamp}
+                </small>
+              </div>
+
+              <div className="ot-alarm-actions">
+                {!alarm.acknowledged && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      alarmAction(
+                        "/api/alarms/acknowledge",
+                        alarm.alarm_id
+                      )
+                    }
+                  >
+                    ACK
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    alarmAction(
+                      "/api/alarms/reset",
+                      alarm.alarm_id
+                    )
+                  }
+                >
+                  RESET
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
 
       {/* =====================================================

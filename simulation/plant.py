@@ -8,6 +8,7 @@ from simulation.process import ProcessState
 from simulation.events import OTEvent
 from simulation.plc_program import PLCProgram
 from simulation.plc_runtime import PLCRuntime
+from simulation.alarm_manager import AlarmManager
 
 
 class Plant:
@@ -189,6 +190,10 @@ class Plant:
         # =====================================================
 
         self.events = []
+
+        self.alarm_manager = AlarmManager(
+            self.add_event
+        )
 
         self.add_event(
             event_type="SYSTEM_START",
@@ -623,10 +628,24 @@ class Plant:
 
     def reset_plc_program(self):
         self.plc_runtime.reset()
+        self.alarm_manager.reset_all()
         return self.plc_program.to_dict()
 
     def get_plc_program(self):
         return self.plc_program.to_dict()
+
+    # =========================================================
+    # ALARM CONTROL
+    # =========================================================
+
+    def get_alarms(self):
+        return self.alarm_manager.get_state()
+
+    def acknowledge_alarm(self, alarm_id: str):
+        return self.alarm_manager.acknowledge(alarm_id).to_dict()
+
+    def reset_alarm(self, alarm_id: str):
+        return self.alarm_manager.reset(alarm_id).to_dict()
 
     def apply_program_motor_speed(self, speed: float):
         speed = max(0, min(2000, float(speed)))
@@ -770,6 +789,9 @@ class Plant:
 
             "plc_program":
                 self.plc_program.to_dict(),
+
+            "alarms":
+                self.alarm_manager.get_state(),
 
             "equipment": [
                 equipment.get_info()
