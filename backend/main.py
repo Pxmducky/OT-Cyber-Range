@@ -48,6 +48,51 @@ def root():
 def get_plant():
     return plant.get_state()
 
+# =====================================================================
+# HMI COMMANDS
+# =====================================================================
+
+@app.post("/api/hmi/start")
+def hmi_start():
+    plant.resume_production()
+
+    plant.add_event(
+        "HMI_START",
+        "INFO",
+        "HMI-001",
+        "Production started from HMI"
+    )
+
+    return plant.get_state()
+
+
+@app.post("/api/hmi/stop")
+def hmi_stop():
+    plant.stop_production()
+
+    plant.add_event(
+        "HMI_STOP",
+        "WARNING",
+        "HMI-001",
+        "Production stopped from HMI"
+    )
+
+    return plant.get_state()
+
+
+@app.post("/api/hmi/reset")
+def hmi_reset():
+    plant.resume_production()
+
+    plant.add_event(
+        "HMI_RESET",
+        "INFO",
+        "HMI-001",
+        "Production reset from HMI"
+    )
+
+    return plant.get_state()
+
 
 @app.get("/api/plc")
 def get_plc():
