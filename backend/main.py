@@ -82,16 +82,16 @@ def hmi_stop():
 
 @app.post("/api/hmi/reset")
 def hmi_reset():
-    plant.resume_production()
+    state = plant.restore_plant()
 
     plant.add_event(
         "HMI_RESET",
         "INFO",
         "HMI-001",
-        "Production reset from HMI"
+        "Plant reset from HMI operator panel — all systems restored to normal"
     )
 
-    return plant.get_state()
+    return state
 
 
 @app.get("/api/plc")
@@ -247,6 +247,85 @@ def execute_attack(request: AttackRequest):
 def restore_plant():
     """Restaura la planta a estado operativo normal tras un escenario de ataque."""
     return plant.restore_plant()
+
+
+@app.post("/api/process/normalize")
+def normalize_process():
+    """
+    Restablece los valores del proceso (T, P, motor, válvula) al rango operativo normal.
+    Solo toca los valores de proceso — no afecta alarmas ni estado de equipos.
+    Útil durante la recuperación paso a paso después de un ataque.
+    """
+    from simulation.equipment import EquipmentStatus
+
+    plant.process.temperature      = 68.0
+    plant.process.pressure         = 3.8
+    plant.process.motor_speed      = 1450.0
+    plant.process.valve_position   = 50.0
+    plant.process.production_running = True
+    plant.process.production_rate  = 100.0
+    plant.process.process_alarm    = False
+
+    plant.plc.write_register("temperature",    68.0)
+    plant.plc.write_register("pressure",       3.8)
+    plant.plc.write_register("motor_speed",    1450.0)
+    plant.plc.write_register("valve_position", 50.0)
+
+    plant.add_event(
+        "PROCESS_NORMALIZED", "INFO", "OT-CYBER-RANGE",
+        "Valores de proceso restaurados a rango operativo normal "
+        "(T=68°C, P=3.8bar, Motor=1450RPM, Válvula=50%)",
+    )
+    return plant.get_state()
+
+
+@app.post("/api/equipment/restore")
+def restore_equipment():
+    """
+    Restablece el estado de todos los activos OT a ONLINE.
+    Solo toca el estado de los equipos — no afecta proceso ni alarmas.
+    """
+    from simulation.equipment import EquipmentStatus
+
+    for eq in plant.equipment:
+        eq.set_status(EquipmentStatus.ONLINE)
+
+    plant.add_event(
+        "EQUIPMENT_RESTORED", "INFO", "OT-CYBER-RANGE",
+        "Estado de todos los activos OT restaurado a ONLINE",
+    )
+    return plant.get_state()
+
+
+@app.post("/api/plc/program/load-safe")
+def load_safe_program():
+    """
+    Carga el programa PLC seguro desde backup durante recuperación de incidente.
+    Equivale a: TIA Portal → Download to Device → desde copia de seguridad verificada.
+    """
+    from simulation.plant import LEGITIMATE_PROGRAM
+    errors = plant.load_plc_program(LEGITIMATE_PROGRAM)
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+
+    # Limpiar el estado COMPROMISED del PLC y restablecer equipos de campo
+    from simulation.equipment import EquipmentStatus
+    plc_eq = plant.get_equipment("PLC-001")
+    if plc_eq:
+        plc_eq.set_status(EquipmentStatus.ONLINE)
+
+    for asset_id in ["M-001", "V-001"]:
+        eq = plant.get_equipment(asset_id)
+        if eq and eq.status in (
+            EquipmentStatus.COMPROMISED, EquipmentStatus.OFFLINE
+        ):
+            eq.set_status(EquipmentStatus.ONLINE)
+
+    plant.add_event(
+        "SAFE_PROGRAM_RESTORED", "INFO", "PLC-001",
+        "Programa PLC seguro restaurado desde backup — recuperación de incidente"
+    )
+    return plant.get_plc_program()
 
 
 # =====================================================================

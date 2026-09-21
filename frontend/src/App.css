@@ -6161,3 +6161,9 @@ button {
   background: #1e1e1e;
   border-radius: 2px;
 }
+
+/* ── Badge de alarma en botón del sidebar ── */
+@keyframes pulse-badge {
+  0%, 100% { transform: scale(1);    opacity: 1;   }
+  50%       { transform: scale(1.15); opacity: 0.85;}
+}

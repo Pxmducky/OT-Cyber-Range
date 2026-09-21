@@ -14,6 +14,7 @@ import {
   Radio,
   Server,
   Shield,
+  ShieldCheck,
   Terminal,
   Boxes,
   GitBranch,
@@ -21,10 +22,11 @@ import {
 
 import "./App.css";
 
-import PhysicalPlant from "./components/PhysicalPlant";
-import PurduePage from "./components/PurduePage";
-import SIEMPage from "./components/SIEMPage";
-import AttackerConsole from "./components/AttackerConsole";
+import PhysicalPlant    from "./components/PhysicalPlant";
+import PurduePage       from "./components/PurduePage";
+import SIEMPage         from "./components/SIEMPage";
+import AttackerConsole  from "./components/AttackerConsole";
+import RecoveryConsole  from "./components/RecoveryConsole";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -607,6 +609,23 @@ function App() {
             }
           />
 
+
+          <NavButton
+            icon={<ShieldCheck size={17} />}
+            label="Recovery"
+            active={
+              activePage === "recovery"
+            }
+            badge={
+              alarms.some(a => a.active && a.severity === "CRITICAL")
+                ? alarms.filter(a => a.active && a.severity === "CRITICAL").length
+                : null
+            }
+            onClick={() =>
+              setActivePage("recovery")
+            }
+          />
+
         </div>
 
 
@@ -681,7 +700,9 @@ function App() {
                       ? "Security Operations Center"
                       : activePage === "attacker"
                         ? "Attacker Workstation"
-                        : activePage}
+                        : activePage === "recovery"
+                          ? "Incident Response"
+                          : activePage}
 
             </h1>
 
@@ -773,6 +794,17 @@ function App() {
 
         )}
 
+
+        {activePage === "recovery" && (
+
+          <RecoveryConsole
+            plant={plant}
+            alarms={plant?.alarms?.active ?? []}
+            equipment={equipment}
+          />
+
+        )}
+
       </main>
 
     </div>
@@ -792,7 +824,8 @@ function NavButton({
   icon,
   label,
   active,
-  onClick
+  onClick,
+  badge = null,
 }) {
 
   return (
@@ -804,6 +837,7 @@ function NavButton({
           : "nav-button"
       }
       onClick={onClick}
+      style={{ position: "relative" }}
     >
 
       {icon}
@@ -811,6 +845,29 @@ function NavButton({
       <span>
         {label}
       </span>
+
+      {badge !== null && badge > 0 && (
+        <span style={{
+          position:     "absolute",
+          top:          4,
+          right:        4,
+          minWidth:     16,
+          height:       16,
+          borderRadius: 8,
+          background:   "#ef4444",
+          color:        "white",
+          fontSize:     9,
+          fontWeight:   700,
+          fontFamily:   "monospace",
+          display:      "flex",
+          alignItems:   "center",
+          justifyContent: "center",
+          padding:      "0 3px",
+          animation:    "pulse-badge 1.2s ease-in-out infinite",
+        }}>
+          {badge > 9 ? "9+" : badge}
+        </span>
+      )}
 
     </button>
 
