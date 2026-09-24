@@ -6167,3 +6167,156 @@ button {
   0%, 100% { transform: scale(1);    opacity: 1;   }
   50%       { transform: scale(1.15); opacity: 0.85;}
 }
+
+
+
+
+/* ══════════════════════════════════════════════════════════════
+   HMI SETPOINTS PANEL
+══════════════════════════════════════════════════════════════ */
+ 
+.hmi-setpoints-panel {
+  margin: 8px 0;
+  border: 1px solid rgba(59,130,246,0.25);
+  border-radius: 6px;
+  overflow: hidden;
+}
+ 
+.hmi-sp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: rgba(59,130,246,0.08);
+  border-bottom: 1px solid rgba(59,130,246,0.2);
+  font-family: monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #60a5fa;
+}
+ 
+.hmi-sp-note {
+  color: #1e3a5f;
+  font-weight: 400;
+  font-size: 8px;
+  letter-spacing: 0.04em;
+}
+ 
+.hmi-sp-row {
+  display: grid;
+  grid-template-columns: 1fr 36px 80px 40px;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.15s;
+}
+.hmi-sp-row:last-of-type { border-bottom: none; }
+.hmi-sp-row:hover        { background: rgba(255,255,255,0.02); }
+ 
+.hmi-sp-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+ 
+.hmi-sp-label {
+  font-family: monospace;
+  font-size: 8px;
+  font-weight: 700;
+  color: #4b5563;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+ 
+.hmi-sp-current {
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+ 
+.hmi-sp-unit {
+  font-size: 9px;
+  font-weight: 400;
+  margin-left: 2px;
+  opacity: 0.7;
+}
+ 
+.hmi-sp-thresholds {
+  font-family: monospace;
+  font-size: 7px;
+  color: #1e3a5f;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+ 
+.hmi-sp-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  padding: 3px 0;
+  font-family: monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  min-width: 30px;
+  text-align: center;
+}
+ 
+.hmi-sp-input {
+  width: 100%;
+  background: #040a12;
+  border: 1px solid #1e3a5f;
+  border-radius: 4px;
+  color: #60a5fa;
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 6px;
+  outline: none;
+  text-align: right;
+  transition: border-color 0.15s;
+  -moz-appearance: textfield;
+}
+.hmi-sp-input::-webkit-outer-spin-button,
+.hmi-sp-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+.hmi-sp-input::placeholder { color: #1e3a5f; font-weight: 400; }
+.hmi-sp-input:focus  { border-color: #3b82f6; }
+.hmi-sp-input:hover  { border-color: #2a4a6f; }
+ 
+.hmi-sp-set-btn {
+  background: rgba(59,130,246,0.12);
+  border: 1px solid rgba(59,130,246,0.4);
+  border-radius: 4px;
+  color: #60a5fa;
+  font-family: monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 5px 0;
+  cursor: pointer;
+  transition: all 0.12s;
+  width: 100%;
+}
+.hmi-sp-set-btn:hover:not(:disabled) {
+  background: rgba(59,130,246,0.25);
+  border-color: #60a5fa;
+}
+.hmi-sp-set-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+ 
+.hmi-sp-status {
+  padding: 6px 10px;
+  font-family: monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  background: rgba(0,0,0,0.2);
+}
