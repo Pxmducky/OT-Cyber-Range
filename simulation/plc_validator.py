@@ -15,6 +15,8 @@ ALLOWED_WRITES = {
     "MOTOR_SPEED",
     "VALVE_POSITION",
     "ALARM",
+    "TEMPERATURE",
+    "PRESSURE",
 }
 
 

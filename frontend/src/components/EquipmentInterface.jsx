@@ -1280,6 +1280,16 @@ function HMIInterface({ asset, process }) {
 
   const [commandError, setCommandError] =
     React.useState("");
+  
+  const [setpointValues, setSetpointValues] = React.useState({
+      TEMPERATURE:    "",
+      PRESSURE:       "",
+      MOTOR_SPEED:    "",
+      VALVE_POSITION: "",
+    });
+     
+  const [setpointStatus, setSetpointStatus] = React.useState("");
+  const [setpointError,  setSetpointError]  = React.useState("");
 
 
   /*
@@ -1378,6 +1388,65 @@ function HMIInterface({ asset, process }) {
     }
 
   };
+
+  const sendSetpoint = async (variable, rawValue) => {
+    const value = parseFloat(rawValue);
+   
+    if (isNaN(value)) {
+      setSetpointError("INVALID VALUE — enter a number");
+      return;
+    }
+   
+    setSetpointStatus(`SETTING ${variable}...`);
+    setSetpointError("");
+   
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/hmi/setpoint", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ variable, value }),
+      });
+   
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+   
+      setSetpointStatus(`${variable} SET TO ${value}`);
+      // Limpiar el campo
+      setSetpointValues(prev => ({ ...prev, [variable]: "" }));
+   
+      setTimeout(() => setSetpointStatus(""), 3000);
+   
+    } catch (error) {
+      setSetpointStatus("");
+      setSetpointError(`SETPOINT FAILED: ${error.message}`);
+    }
+  };
+   
+  // Función auxiliar: devuelve el nivel de alarma actual de una variable
+  const alarmLevel = (variable, val) => {
+    const t = {
+      TEMPERATURE:    { ll: 40,   l: 60,  h: 80,    hh: 90   },
+      PRESSURE:       { ll: 2.0,  l: 3.0, h: 4.5,   hh: 5.5  },
+      MOTOR_SPEED:    { ll: 400,  l: 600, h: 1550,  hh: 1650 },
+      VALVE_POSITION: { ll: 5,                       hh: 92   },
+    }[variable] || {};
+   
+    if (t.hh !== undefined && val >= t.hh) return "HH";
+    if (t.ll !== undefined && val <= t.ll) return "LL";
+    if (t.h  !== undefined && val >= t.h)  return "H";
+    if (t.l  !== undefined && val <= t.l)  return "L";
+    return "OK";
+  };
+   
+  const alarmColor = (level) => ({
+    HH: "#ef4444",
+    LL: "#ef4444",
+    H:  "#f59e0b",
+    L:  "#f59e0b",
+    OK: "#22c55e",
+  }[level] ?? "#22c55e");
 
 
   return (
@@ -1627,9 +1696,157 @@ function HMIInterface({ asset, process }) {
           </div>
 
 
-          {/* =================================================
-              ALARM
-          ================================================= */}
+          
+  <>
+    {/* =====================================================
+        SETPOINTS — Ajuste de variables de proceso
+        (En planta real: el operador toca aquí y escribe)
+    ===================================================== */}
+ 
+    <div className="hmi-setpoints-panel">
+ 
+      <div className="hmi-sp-header">
+        <span>▼ PROCESS SETPOINTS</span>
+        <span className="hmi-sp-note">ISA-18.2  LL · L · OK · H · HH</span>
+      </div>
+ 
+      {[
+        {
+          key:   "TEMPERATURE",
+          label: "TEMPERATURE",
+          unit:  "°C",
+          val:   temperature,
+          min:   0, max: 150, step: 1,
+          normal: "60 – 78",
+          thresholds: "LL:40 · L:60 · H:80 · HH:90",
+        },
+        {
+          key:   "PRESSURE",
+          label: "PRESSURE",
+          unit:  "bar",
+          val:   pressure,
+          min:   0, max: 20, step: 0.1,
+          normal: "3.0 – 4.3",
+          thresholds: "LL:2.0 · L:3.0 · H:4.5 · HH:5.5",
+        },
+        {
+          key:   "MOTOR_SPEED",
+          label: "MOTOR SPEED",
+          unit:  "RPM",
+          val:   motorSpeed,
+          min:   0, max: 2000, step: 50,
+          normal: "800 – 1500",
+          thresholds: "LL:400 · L:600 · H:1550 · HH:1650",
+        },
+        {
+          key:   "VALVE_POSITION",
+          label: "VALVE POS",
+          unit:  "%",
+          val:   valve,
+          min:   0, max: 100, step: 1,
+          normal: "10 – 90",
+          thresholds: "LL:5 · HH:92",
+        },
+      ].map(({ key, label, unit, val, min, max, step, normal, thresholds }) => {
+ 
+        const level = alarmLevel(key, val);
+        const color = alarmColor(level);
+        const numVal = typeof val === "number" ? val : parseFloat(val) || 0;
+        const displayVal = unit === "bar"
+          ? numVal.toFixed(2)
+          : unit === "°C"
+          ? numVal.toFixed(1)
+          : numVal.toFixed(0);
+ 
+        return (
+          <div key={key} className="hmi-sp-row">
+ 
+            {/* Variable y valor actual */}
+            <div className="hmi-sp-info">
+              <span className="hmi-sp-label">{label}</span>
+              <div className="hmi-sp-current" style={{ color }}>
+                {displayVal}
+                <span className="hmi-sp-unit">{unit}</span>
+              </div>
+              <div className="hmi-sp-thresholds">{thresholds}</div>
+            </div>
+ 
+            {/* Badge de nivel de alarma */}
+            <div
+              className="hmi-sp-badge"
+              style={{
+                background: color + "18",
+                border:     `1px solid ${color}`,
+                color,
+              }}
+            >
+              {level}
+            </div>
+ 
+            {/* Input de setpoint */}
+            <input
+              type="number"
+              className="hmi-sp-input"
+              min={min}
+              max={max}
+              step={step}
+              placeholder={normal}
+              value={setpointValues[key]}
+              onChange={e =>
+                setSetpointValues(prev => ({ ...prev, [key]: e.target.value }))
+              }
+              onKeyDown={e => {
+                if (e.key === "Enter" && setpointValues[key] !== "") {
+                  sendSetpoint(key, setpointValues[key]);
+                }
+              }}
+            />
+ 
+            {/* Botón SET */}
+            <button
+              type="button"
+              className="hmi-sp-set-btn"
+              disabled={setpointValues[key] === ""}
+              onClick={() => sendSetpoint(key, setpointValues[key])}
+            >
+              SET
+            </button>
+ 
+          </div>
+        );
+      })}
+ 
+      {/* Estado del último setpoint */}
+      {(setpointStatus || setpointError) && (
+        <div
+          className="hmi-sp-status"
+          style={{ color: setpointError ? "#ef4444" : "#22c55e" }}
+        >
+          {setpointError || setpointStatus}
+        </div>
+      )}
+ 
+    </div>
+ 
+ 
+    {/* =====================================================
+        ALARM
+    ===================================================== */}
+ 
+    <div className="hmi-alarm">
+ 
+      <AlertTriangle size={16} />
+ 
+      <span>ALARM STATUS</span>
+ 
+      <strong>
+        {running ? "NO ACTIVE ALARMS" : "PROCESS STOPPED"}
+      </strong>
+ 
+    </div>
+  </>
+);
+ 
 
           <div className="hmi-alarm">
 

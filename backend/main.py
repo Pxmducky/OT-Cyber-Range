@@ -32,8 +32,31 @@ class PLCProgramRequest(BaseModel):
 class AlarmActionRequest(BaseModel):
     alarm_id: str
 
+class ProcessSetRequest(BaseModel):
+    temperature:    Optional[float] = None
+    pressure:       Optional[float] = None
+    motor_speed:    Optional[float] = None
+    valve_position: Optional[float] = None
+
+
+@app.post("/api/process/set")
+def set_process_values(req: ProcessSetRequest):
+    """Permite al operador cambiar los valores del proceso directamente desde la interfaz."""
+    plant.set_process_values(
+        temperature    = req.temperature,
+        pressure       = req.pressure,
+        motor_speed    = req.motor_speed,
+        valve_position = req.valve_position,
+    )
+    return plant.get_state()
+
+
 class AttackRequest(BaseModel):
     attack_type: str
+
+class SetpointRequest(BaseModel):
+    variable: str
+    value: float
 
 @app.get("/")
 def root():
@@ -47,7 +70,6 @@ def root():
 @app.get("/api/plant")
 def get_plant():
     return plant.get_state()
-
 # =====================================================================
 # HMI COMMANDS
 # =====================================================================
@@ -82,17 +104,16 @@ def hmi_stop():
 
 @app.post("/api/hmi/reset")
 def hmi_reset():
-    state = plant.restore_plant()
+    plant.resume_production()
 
     plant.add_event(
         "HMI_RESET",
         "INFO",
         "HMI-001",
-        "Plant reset from HMI operator panel — all systems restored to normal"
+        "Production reset from HMI"
     )
 
-    return state
-
+    return plant.get_state()
 
 @app.get("/api/plc")
 def get_plc():
@@ -219,6 +240,25 @@ def stop_plc_program():
 @app.post("/api/plc/program/reset")
 def reset_plc_program():
     return plant.reset_plc_program()
+
+
+# =====================================================================
+# HMI SETPOINTS
+# El operador introduce valores desde el panel KP400.
+# El sistema verifica umbrales ISA-18.2 (LL/L/H/HH) automáticamente.
+# =====================================================================
+
+@app.post("/api/hmi/setpoint")
+def hmi_setpoint(request: SetpointRequest):
+    """
+    Aplica el setpoint de una variable de proceso introducido desde el HMI.
+    Equivale en la vida real a: operador toca la pantalla, escribe el valor,
+    el PLC lo recibe en su DB y el alarm manager verifica los umbrales.
+    """
+    try:
+        return plant.set_hmi_setpoint(request.variable, request.value)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
 
 
 # =====================================================================

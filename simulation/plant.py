@@ -742,6 +742,173 @@ class Plant:
             ),
         )
 
+    def apply_program_temperature(self, temperature: float):
+        """El programa PLC escribe directamente al setpoint de temperatura."""
+        temperature = max(0.0, min(150.0, float(temperature)))
+        old_temperature = self.process.temperature
+
+        if abs(old_temperature - temperature) < 0.01:
+            return
+
+        self.process.temperature = temperature
+        self.plc.write_register("temperature", temperature)
+
+        self.add_event(
+            event_type="PLC_PROGRAM_OUTPUT",
+            severity="HIGH" if temperature > 80 or temperature < 40 else "INFO",
+            source="PLC-001",
+            message=(
+                f"PLC program commanded temperature "
+                f"from {old_temperature:.1f}°C to {temperature:.1f}°C"
+            ),
+        )
+
+    def apply_program_pressure(self, pressure: float):
+        """El programa PLC escribe directamente al setpoint de presión."""
+        pressure = max(0.0, min(20.0, float(pressure)))
+        old_pressure = self.process.pressure
+
+        if abs(old_pressure - pressure) < 0.01:
+            return
+
+        self.process.pressure = pressure
+        self.plc.write_register("pressure", pressure)
+
+        self.add_event(
+            event_type="PLC_PROGRAM_OUTPUT",
+            severity="HIGH" if pressure > 4.5 or pressure < 2.5 else "INFO",
+            source="PLC-001",
+            message=(
+                f"PLC program commanded pressure "
+                f"from {old_pressure:.2f} bar to {pressure:.2f} bar"
+            ),
+        )
+
+    # =========================================================
+    # HMI SETPOINTS — umbrales ISA-18.2 (LL / L / H / HH)
+    # En la vida real: el operador introduce un valor en la
+    # pantalla HMI → el PLC lo recibe en su DB → ajusta el
+    # proceso → el alarm manager verifica los umbrales.
+    # =========================================================
+
+    # Formato: (valor_umbral, operador, alarm_id, severity, mensaje_siem)
+    # operador ">=" → activa cuando valor >= umbral
+    # operador "<=" → activa cuando valor <= umbral
+    HMI_ALARM_THRESHOLDS = {
+        "TEMPERATURE": [
+            (40.0, "<=", "TEMP_LL", "WARNING",
+             "Temperatura LL — proceso excesivamente frío"),
+            (60.0, "<=", "TEMP_L",  "INFO",
+             "Temperatura L — por debajo del mínimo operativo (60 °C)"),
+            (80.0, ">=", "TEMP_H",  "HIGH",
+             "Temperatura H — sobre el máximo operativo (80 °C)"),
+            (90.0, ">=", "TEMP_HH", "CRITICAL",
+             "Temperatura HH — emergencia térmica, riesgo de daño"),
+        ],
+        "PRESSURE": [
+            (2.0,  "<=", "PRES_LL", "WARNING",
+             "Presión LL — posible pérdida de fluido de proceso"),
+            (3.0,  "<=", "PRES_L",  "INFO",
+             "Presión L — por debajo del mínimo operativo (3.0 bar)"),
+            (4.5,  ">=", "PRES_H",  "HIGH",
+             "Presión H — sobre el máximo operativo (4.5 bar)"),
+            (5.5,  ">=", "PRES_HH", "CRITICAL",
+             "Presión HH — riesgo de ruptura del recipiente"),
+        ],
+        "MOTOR_SPEED": [
+            (400.0,  "<=", "MOTOR_LL", "WARNING",
+             "Motor LL — velocidad extremadamente baja, posible parada"),
+            (600.0,  "<=", "MOTOR_L",  "HIGH",
+             "Motor L — velocidad por debajo del mínimo operativo"),
+            (1550.0, ">=", "MOTOR_H",  "HIGH",
+             "Motor H — velocidad sobre el límite nominal (1500 RPM)"),
+            (1650.0, ">=", "MOTOR_HH", "CRITICAL",
+             "Motor HH — sobrevelocidad crítica, riesgo mecánico"),
+        ],
+        "VALVE_POSITION": [
+            (5.0,  "<=", "VALVE_LL", "WARNING",
+             "Válvula LL — casi cerrada, flujo mínimo"),
+            (92.0, ">=", "VALVE_HH", "HIGH",
+             "Válvula HH — casi completamente abierta, sin control"),
+        ],
+    }
+
+    def set_hmi_setpoint(self, variable: str, value: float) -> dict:
+        """
+        Aplica un setpoint introducido por el operador desde el panel HMI.
+
+        Flujo real equivalente:
+          1. Operador toca la pantalla del KP400 e introduce el valor
+          2. El HMI escribe el setpoint en el DB del PLC (p.e. DB1.DBD20)
+          3. El programa PLC lee el nuevo setpoint en el siguiente ciclo
+          4. El alarm manager verifica umbrales ISA-18.2 (LL/L/H/HH)
+          5. Se generan alarmas y eventos SIEM si procede
+        """
+        variable = variable.upper()
+
+        handlers = {
+            "TEMPERATURE":    self.apply_program_temperature,
+            "PRESSURE":       self.apply_program_pressure,
+            "MOTOR_SPEED":    self.apply_program_motor_speed,
+            "VALVE_POSITION": self.apply_program_valve_position,
+        }
+
+        if variable not in handlers:
+            raise ValueError(
+                f"Variable '{variable}' no es ajustable desde el HMI. "
+                f"Variables disponibles: {', '.join(handlers)}"
+            )
+
+        # Aplicar al proceso
+        handlers[variable](value)
+
+        # Verificar umbrales y disparar alarmas
+        triggered = self._check_hmi_alarms(variable, value)
+
+        # Severidad del evento SIEM según la alarma más grave disparada
+        severity_rank = {"INFO": 0, "WARNING": 1, "HIGH": 2, "CRITICAL": 3}
+        event_severity = "INFO"
+        for t in triggered:
+            if severity_rank.get(t["severity"], 0) > severity_rank.get(event_severity, 0):
+                event_severity = t["severity"]
+
+        alarm_note = (
+            f" — {len(triggered)} alarma(s): "
+            + ", ".join(t["alarm_id"] for t in triggered)
+        ) if triggered else ""
+
+        self.add_event(
+            "HMI_SETPOINT", event_severity, "HMI-001",
+            f"Operador ajustó {variable} a {value:.2f} desde panel HMI" + alarm_note,
+        )
+
+        return self.get_state()
+
+    def _check_hmi_alarms(self, variable: str, value: float) -> list:
+        """Verifica los umbrales ISA-18.2 para una variable y dispara alarmas."""
+        thresholds = self.HMI_ALARM_THRESHOLDS.get(variable, [])
+        triggered = []
+
+        for threshold_value, operator, alarm_id, severity, message in thresholds:
+            active = (
+                (operator == ">=" and value >= threshold_value)
+                or (operator == "<=" and value <= threshold_value)
+            )
+            if active:
+                self.alarm_manager.trigger(
+                    alarm_id=alarm_id,
+                    severity=severity,
+                    source="HMI-001",
+                    message=(
+                        f"{message} — "
+                        f"Valor ingresado: {value:.2f}  "
+                        f"(umbral: {threshold_value})"
+                    ),
+                )
+                triggered.append({"alarm_id": alarm_id, "severity": severity})
+
+        return triggered
+
     # =========================================================
     # GENERIC EQUIPMENT STATUS
     # =========================================================
@@ -1085,8 +1252,48 @@ class Plant:
 
         return self.get_state()
 
-    # =========================================================
-    # INVENTORY
+    def set_process_values(
+        self,
+        temperature:    float | None = None,
+        pressure:       float | None = None,
+        motor_speed:    float | None = None,
+        valve_position: float | None = None,
+    ) -> dict:
+        """Establece valores de proceso directamente desde la interfaz del operador."""
+        changed = []
+
+        if temperature is not None:
+            t = max(0.0, min(150.0, float(temperature)))
+            self.process.temperature = t
+            self.plc.write_register("temperature", t)
+            changed.append(f"T={t:.1f}°C")
+
+        if pressure is not None:
+            p = max(0.0, min(20.0, float(pressure)))
+            self.process.pressure = p
+            self.plc.write_register("pressure", p)
+            changed.append(f"P={p:.2f}bar")
+
+        if motor_speed is not None:
+            m = max(0.0, min(2000.0, float(motor_speed)))
+            self.process.change_motor_speed(m)
+            self.plc.write_register("motor_speed", m)
+            changed.append(f"Motor={m:.0f}RPM")
+
+        if valve_position is not None:
+            v = max(0.0, min(100.0, float(valve_position)))
+            self.process.change_valve_position(v)
+            self.plc.write_register("valve_position", v)
+            changed.append(f"Valve={v:.0f}%")
+
+        if changed:
+            self.add_event(
+                "OPERATOR_PROCESS_SET", "INFO", "HMI-001",
+                "Operator set process values from interface: " + ", ".join(changed),
+            )
+
+        return self.get_state()
+
     # =========================================================
 
     def get_inventory(self):

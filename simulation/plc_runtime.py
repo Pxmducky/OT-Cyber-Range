@@ -167,6 +167,10 @@ class PLCRuntime:
                 self.plant.apply_program_motor_speed(float(value))
             elif variable == "VALVE_POSITION":
                 self.plant.apply_program_valve_position(float(value))
+            elif variable == "TEMPERATURE":
+                self.plant.apply_program_temperature(float(value))
+            elif variable == "PRESSURE":
+                self.plant.apply_program_pressure(float(value))
             elif variable == "ALARM":
                 new_alarm = bool(value)
                 if new_alarm and not self.flags["ALARM"]:
