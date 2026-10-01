@@ -1,618 +1,676 @@
 /**
  * PLCInterface.jsx
- * Interfaz completa de PLC — editor ST real, tabla de variables, diagnóstico.
- * El usuario puede cargar CUALQUIER código ST y se ejecuta dentro del sandbox.
+ * Interfaz completa de PLC conectada al MOTOR DE SIMULACIÓN del backend.
+ *
+ * Diferencia clave con la versión anterior:
+ *   - El código ST ya NO se ejecuta en el navegador. Se envía al backend
+ *     (/api/plc/program/*) donde el PLCRuntime lo ejecuta dentro del sandbox
+ *     y sus salidas (MOTOR_SPEED, VALVE_POSITION, TEMPERATURE, PRESSURE, ALARM)
+ *     cambian la PRODUCCIÓN REAL de la planta.
+ *   - El alumno puede cargar CUALQUIER programa ST válido (VAR, aritmética,
+ *     IF/ELSIF/ELSE, funciones LIMIT/MIN/MAX/ABS, etc.).
+ *
+ * Nota de arquitectura: el backend modela un único proceso físico (PLC-001).
+ * Cualquier PLC abierto desde la planta controla ese proceso de laboratorio.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { executeSTCode, compileSTCode, extractVarDeclarations, formatVarValue } from "../../utils/stInterpreter";
+
+const API_URL = "http://127.0.0.1:8000";
 
 /* ── Paleta ── */
 const C = {
-  bg:       "#05080f",
-  bg2:      "#080e18",
-  bg3:      "#0d1520",
-  border:   "#1e293b",
-  accent:   "#22d3ee",   // Siemens teal
-  green:    "#22c55e",
-  red:      "#ef4444",
-  amber:    "#f59e0b",
-  purple:   "#818cf8",
-  text:     "#e2e8f0",
-  dim:      "#4b5563",
-  mono:     "'Fira Code', 'Cascadia Code', 'Consolas', monospace",
+  bg:     "#05080f", bg2: "#080e18", bg3: "#0d1520",
+  border: "#1e293b", accent: "#22d3ee", green: "#22c55e",
+  red:    "#ef4444", amber: "#f59e0b", purple: "#818cf8",
+  text:   "#e2e8f0", dim: "#4b5563",
+  mono:   "'Fira Code', 'Cascadia Code', 'Consolas', monospace",
 };
 
-/* ── Syntax highlighter simple (regex-based) ── */
-function highlightST(code) {
-  const escape = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  return escape(code)
-    .replace(/\(\*[\s\S]*?\*\)/g, m => `<span style="color:#4b5563;font-style:italic">${m}</span>`)
-    .replace(/(\/\/[^\n]*)/g, `<span style="color:#4b5563;font-style:italic">$1</span>`)
-    .replace(/\b(PROGRAM|END_PROGRAM|VAR|END_VAR|VAR_INPUT|VAR_OUTPUT|IF|THEN|ELSIF|ELSE|END_IF|FOR|TO|BY|DO|END_FOR|WHILE|END_WHILE|REPEAT|UNTIL|CASE|OF|END_CASE|RETURN|EXIT|NETWORK|AND|OR|NOT|XOR|MOD|DIV)\b/gi,
-      `<span style="color:#818cf8;font-weight:700">$1</span>`)
-    .replace(/\b(BOOL|INT|UINT|DINT|REAL|LREAL|STRING|BYTE|WORD|TIME)\b/gi,
-      `<span style="color:#06b6d4">$1</span>`)
-    .replace(/\b(TRUE|FALSE)\b/gi,
-      `<span style="color:#f97316;font-weight:700">$1</span>`)
-    .replace(/(:=|&lt;&gt;|&lt;=|&gt;=|[=&lt;&gt;+\-*/])/g,
-      `<span style="color:#f59e0b">$1</span>`)
-    .replace(/\b(\d+\.?\d*)\b/g,
-      `<span style="color:#22c55e">$1</span>`);
+/* ── Plantillas de código (todas válidas para el validador del backend) ── */
+const CODE_TEMPLATES = {
+  blank: `(* Escribe tu programa ST aquí *)
+PROGRAM MAIN
+VAR
+  (* Declara tus variables internas aquí *)
+END_VAR
+
+NETWORK 1
+(* Las salidas al proceso real son:
+   MOTOR_SPEED, VALVE_POSITION, TEMPERATURE, PRESSURE, ALARM *)
+IF TEMPERATURE > 75.0 THEN
+  MOTOR_SPEED := 1200;
+END_IF
+
+END_PROGRAM`,
+
+  temperature_control: `(* Control de temperatura con válvula y motor *)
+PROGRAM MAIN
+VAR
+  Setpoint   : REAL := 70.0;
+  Deadband   : REAL := 2.0;
+  ValvePos   : REAL := 50.0;
+END_VAR
+
+NETWORK 1
+IF TEMPERATURE > Setpoint + Deadband THEN
+  ValvePos       := LIMIT(0.0, ValvePos + 5.0, 100.0);
+  VALVE_POSITION := ValvePos;
+  MOTOR_SPEED    := MAX(1300, 1600 - ABS(TEMPERATURE - Setpoint) * 10);
+ELSIF TEMPERATURE < Setpoint - Deadband THEN
+  ValvePos       := LIMIT(0.0, ValvePos - 5.0, 100.0);
+  VALVE_POSITION := ValvePos;
+  MOTOR_SPEED    := 1450;
+END_IF
+
+NETWORK 2
+IF TEMPERATURE >= 80.0 THEN
+  ALARM := TRUE;
+ELSE
+  ALARM := FALSE;
+END_IF
+
+END_PROGRAM`,
+
+  pressure_relief: `(* Alivio de presión automático *)
+PROGRAM MAIN
+VAR
+  MaxPressure : REAL := 4.2;
+  MinPressure : REAL := 3.2;
+END_VAR
+
+NETWORK 1
+IF PRESSURE > MaxPressure THEN
+  VALVE_POSITION := 70;
+ELSIF PRESSURE < MinPressure THEN
+  VALVE_POSITION := 35;
+END_IF
+
+END_PROGRAM`,
+
+  safe_default: `(* Programa seguro de referencia de la planta *)
+PROGRAM MAIN
+NETWORK 1
+IF TEMPERATURE >= 75 THEN
+  MOTOR_SPEED := 1200;
+END_IF
+NETWORK 2
+IF TEMPERATURE < 65 THEN
+  MOTOR_SPEED := 1450;
+END_IF
+NETWORK 3
+IF PRESSURE > 4.2 THEN
+  VALVE_POSITION := 70;
+END_IF
+NETWORK 4
+IF PRESSURE < 3.2 THEN
+  VALVE_POSITION := 35;
+END_IF
+NETWORK 5
+IF TEMPERATURE >= 78 THEN
+  ALARM := TRUE;
+END_IF
+NETWORK 6
+IF TEMPERATURE < 75 THEN
+  ALARM := FALSE;
+END_IF
+END_PROGRAM`,
+};
+
+/* ── Helpers de API ── */
+async function apiPost(path, body) {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data?.detail;
+    const errs = detail?.errors || (Array.isArray(detail) ? detail : null);
+    throw { message: detail?.message || data?.message || `HTTP ${res.status}`, errors: errs };
+  }
+  return data;
+}
+async function apiGet(path) {
+  const res = await fetch(`${API_URL}${path}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
-/* ── Plantillas de código ── */
-const CODE_TEMPLATES = {
-  blank: `(* Escribe tu código ST aquí *)
-PROGRAM MAIN
-VAR
-  (* Declara tus variables aquí *)
-END_VAR
+/* ── Documentación descargable del equipo ── */
+function buildDocText(asset) {
+  return `OT CYBER RANGE — DOCUMENTACIÓN DE EQUIPO
+=========================================
+Equipo:    ${asset.name || asset.id}
+ID:         ${asset.id}
+Tipo:       ${asset.type || "PLC"}
+Fabricante: ${asset.vendor || "—"}
+Modelo:     ${asset.model || "—"}
+IP:         ${asset.ip || "—"}
+VLAN:       ${asset.vlan || "—"}
+Protocolos: ${(asset.protocols || []).join(", ") || "—"}
 
-NETWORK 1
-  (* Lógica de control *)
+1. ¿QUÉ ES UN PLC?
+Un Controlador Lógico Programable ejecuta un programa de forma cíclica
+(scan cycle): lee entradas -> ejecuta la lógica -> escribe salidas. En este
+laboratorio el programa se escribe en Structured Text (IEC 61131-3) y se
+ejecuta en el motor de simulación del backend dentro de un sandbox.
 
-END_PROGRAM`,
+2. CICLO DE SCAN
+Cada ciclo (1 s en el laboratorio):
+  a) Lee las variables del proceso (entradas).
+  b) Ejecuta el programa MAIN.
+  c) Escribe las salidas al proceso real.
 
-  temperature_control: `(* Control de temperatura con válvula y alarma *)
-PROGRAM MAIN
-VAR
-  Temperature  : REAL := 68.4;
-  Setpoint     : REAL := 70.0;
-  Deadband     : REAL := 2.0;
-  Valve_Pos    : REAL := 50.0;
-  Motor_Speed  : INT  := 1450;
-  Alarm_High   : BOOL := FALSE;
-  Alarm_HiHi   : BOOL := FALSE;
-END_VAR
+3. VARIABLES DE PROCESO
+Lectura (entradas):  START, STOP, TEMPERATURE, PRESSURE, MOTOR_SPEED,
+                     VALVE_POSITION, PRODUCTION_RATE, ALARM
+Escritura (salidas que IMPACTAN LA PRODUCCIÓN REAL):
+  MOTOR_SPEED     RPM del motor (0-2000)
+  VALVE_POSITION  % de apertura de válvula (0-100)
+  TEMPERATURE     setpoint de temperatura (°C)
+  PRESSURE        setpoint de presión (bar)
+  ALARM           dispara/limpia la alarma del PLC
+Cualquier otra variable que declares en VAR...END_VAR es memoria interna
+del PLC y NO afecta la planta.
 
-NETWORK 1
-(* Control PI simplificado *)
-IF Temperature > Setpoint + Deadband THEN
-  Valve_Pos   := LIMIT(0.0, Valve_Pos + 5.0, 100.0);
-  Motor_Speed := 1600;
-ELSIF Temperature < Setpoint - Deadband THEN
-  Valve_Pos   := LIMIT(0.0, Valve_Pos - 5.0, 100.0);
-  Motor_Speed := 1300;
-END_IF
+4. INSTRUCCIONES SOPORTADAS
+  - PROGRAM <nombre> ... END_PROGRAM
+  - VAR ... END_VAR  (BOOL/INT/REAL, con valor inicial opcional)
+  - NETWORK <n>  (separador opcional)
+  - IF / ELSIF / ELSE / END_IF  (anidables)
+  - Asignación:  NOMBRE := expresión;
+  - Aritmética:  + - * / MOD  y paréntesis
+  - Lógica:      AND OR NOT, comparaciones = <> < <= > >=
+  - Funciones:   LIMIT(min,x,max), MIN(a,b), MAX(a,b), ABS(x)
 
-NETWORK 2
-(* Alarmas ISA-18.2 *)
-Alarm_High  := Temperature >= 80.0;
-Alarm_HiHi  := Temperature >= 90.0;
+5. SEGURIDAD
+El código se valida antes de descargarse al PLC y se ejecuta en un intérprete
+aislado: nunca se ejecuta sobre el sistema host. Un programa mal diseñado SÍ
+puede degradar el proceso simulado (ese es el objetivo didáctico).
+`;
+}
 
-END_PROGRAM`,
-
-  production_counter: `(* Contador de piezas con reset *)
-PROGRAM MAIN
-VAR
-  Sensor_Signal  : BOOL := FALSE;
-  Piece_Count    : INT  := 0;
-  Batch_Target   : INT  := 100;
-  Batch_Complete : BOOL := FALSE;
-  Reset_Button   : BOOL := FALSE;
-  Conveyor_Run   : BOOL := TRUE;
-END_VAR
-
-NETWORK 1
-(* Reset del contador *)
-IF Reset_Button THEN
-  Piece_Count    := 0;
-  Batch_Complete := FALSE;
-END_IF
-
-NETWORK 2
-(* Contar flanco positivo del sensor *)
-IF Sensor_Signal AND Conveyor_Run THEN
-  Piece_Count := Piece_Count + 1;
-END_IF
-
-NETWORK 3
-(* Detectar lote completo *)
-IF Piece_Count >= Batch_Target THEN
-  Batch_Complete := TRUE;
-  Conveyor_Run   := FALSE;
-END_IF
-
-END_PROGRAM`,
-
-  safety_interlock: `(* Enclavamiento de seguridad multi-condición *)
-PROGRAM MAIN
-VAR
-  Door_Closed      : BOOL := TRUE;
-  Guard_OK         : BOOL := TRUE;
-  EStop_OK         : BOOL := TRUE;
-  Pressure_OK      : BOOL := TRUE;
-  Temp_OK          : BOOL := TRUE;
-  Motor_Enable     : BOOL := FALSE;
-  Safety_Fault     : BOOL := FALSE;
-  Fault_Code       : INT  := 0;
-END_VAR
-
-NETWORK 1
-(* Calcular código de fallo *)
-Fault_Code := 0;
-IF NOT Door_Closed  THEN Fault_Code := 1; END_IF
-IF NOT Guard_OK     THEN Fault_Code := 2; END_IF
-IF NOT EStop_OK     THEN Fault_Code := 3; END_IF
-IF NOT Pressure_OK  THEN Fault_Code := 4; END_IF
-IF NOT Temp_OK      THEN Fault_Code := 5; END_IF
-
-NETWORK 2
-(* Habilitar motor solo si todo OK *)
-Safety_Fault := Fault_Code > 0;
-Motor_Enable := Door_Closed AND Guard_OK AND EStop_OK
-                AND Pressure_OK AND Temp_OK;
-
-END_PROGRAM`,
-};
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
 
 /* ── Componente principal ── */
 export default function PLCInterface({ asset, labData, plant, onBack }) {
-  const [tab,         setTab]         = useState("editor");    // editor | variables | diagnostics | info
-  const [code,        setCode]        = useState("");
-  const [plcState,    setPlcState]    = useState("STOP");      // STOP | RUN | ERROR
-  const [variables,   setVariables]   = useState({});          // var dict
-  const [execResult,  setExecResult]  = useState(null);
-  const [scanLog,     setScanLog]     = useState([]);
-  const [scanCount,   setScanCount]   = useState(0);
-  const [scanTime,    setScanTime]    = useState(0);
-  const [editingVar,  setEditingVar]  = useState(null);        // { name, value }
-  const [newVarName,  setNewVarName]  = useState("");
-  const [newVarVal,   setNewVarVal]   = useState("");
-  const [errors,      setErrors]      = useState([]);
-  const [uploadMsg,   setUploadMsg]   = useState(null);
+  const [tab, setTab]           = useState("control");   // control | variables | diagnostics | docs | info
+  const [code, setCode]         = useState(CODE_TEMPLATES.safe_default);
+  const [live, setLive]         = useState(null);        // estado vivo del backend
+  const [program, setProgram]   = useState(null);        // estado del programa PLC
+  const [backendUp, setBackendUp] = useState(true);
+  const [busy, setBusy]         = useState(false);
+  const [errors, setErrors]     = useState([]);
+  const [msg, setMsg]           = useState(null);        // { type, text }
   const [showTemplates, setShowTemplates] = useState(false);
-  const scanRef     = useRef(null);
-  const editorRef   = useRef(null);
-  const scanCountRef = useRef(0);
+  const [editVar, setEditVar]   = useState(null);        // { name, value }
+  const editorRef = useRef(null);
+  const STORAGE_KEY = `plc_code_${asset?.id || "default"}`;
 
-  /* ── Cargar variables del Excel si están disponibles ── */
+  const flash = useCallback((type, text, ms = 3500) => {
+    setMsg({ type, text });
+    setTimeout(() => setMsg(null), ms);
+  }, []);
+
+  /* ── Cargar programa actual del backend al montar ── */
   useEffect(() => {
-    const assetVars = labData?.variables?.filter(v => v.assetId === asset.id) ?? [];
-    if (assetVars.length > 0) {
-      const dict = {};
-      assetVars.forEach(v => {
-        const val = v.type?.toUpperCase() === 'BOOL'
-          ? Boolean(v.initialValue)
-          : parseFloat(v.initialValue) || 0;
-        dict[v.variable] = val;
-      });
-      setVariables(dict);
-    } else {
-      // Variables por defecto para el PLC
-      setVariables({ Temperature: 68.4, Pressure: 3.82, Motor_Speed: 1450, Valve_Pos: 50, Alarm: false });
-    }
-    setCode(CODE_TEMPLATES.blank);
-  }, [asset.id]);
+    let cancelled = false;
+    apiGet("/api/plc/program")
+      .then(p => { if (!cancelled) { setProgram(p); if (p?.source) setCode(p.source); } })
+      .catch(() => { if (!cancelled) setBackendUp(false); });
+    return () => { cancelled = true; };
+  }, [asset?.id]);
 
-  /* ── Ciclo de scan (se ejecuta mientras RUN) ── */
+  /* ── Polling de estado vivo (proceso + programa) ── */
   useEffect(() => {
-    if (plcState !== "RUN") {
-      clearInterval(scanRef.current);
-      return;
-    }
-    scanRef.current = setInterval(() => {
-      const t0 = performance.now();
-      const result = executeSTCode(code, { ...variables });
-      const dt = performance.now() - t0;
-
-      if (result.success) {
-        setVariables(result.vars);
-        setExecResult(result);
-        setPlcState("RUN");
-        setErrors([]);
-        setScanTime(dt.toFixed(2));
-        scanCountRef.current++;
-        setScanCount(scanCountRef.current);
-
-        // Registrar cambios en log
-        if (Object.keys(result.changedVars).length > 0) {
-          const entry = {
-            ts: new Date().toLocaleTimeString(),
-            scan: scanCountRef.current,
-            changes: result.changedVars,
-          };
-          setScanLog(prev => [entry, ...prev].slice(0, 50));
-        }
-      } else {
-        setErrors(result.errors);
-        setPlcState("ERROR");
-        clearInterval(scanRef.current);
+    let timer;
+    const poll = async () => {
+      try {
+        const data = await apiGet("/api/plant");
+        setLive(data);
+        setProgram(data.plc_program);
+        setBackendUp(true);
+      } catch {
+        setBackendUp(false);
       }
-    }, 500); // scan cada 500ms
+      timer = setTimeout(poll, 1000);
+    };
+    poll();
+    return () => clearTimeout(timer);
+  }, []);
 
-    return () => clearInterval(scanRef.current);
-  }, [plcState, code, variables]);
+  const proc    = live?.process || {};
+  const cpuState = live?.plc?.cpu_state || "—";
+  const progStatus = program?.status || "NOT_LOADED";
+  const progRunning = !!program?.running;
+  const scanCount = program?.execution_count ?? 0;
 
-  /* ── Acciones ── */
-  function handleLoad() {
-    const { errors: syntaxErrors } = compileSTCode(code);
-    if (syntaxErrors.length > 0) {
-      setErrors(syntaxErrors);
-      setPlcState("ERROR");
-      setUploadMsg({ type: "error", text: `Error de sintaxis: ${syntaxErrors[0].message}` });
-      setTimeout(() => setUploadMsg(null), 4000);
-      return;
-    }
-    // Merge any VAR declarations into variables dict
-    const declaredVars = extractVarDeclarations(code);
-    setVariables(prev => ({ ...prev, ...declaredVars }));
-    setErrors([]);
-    setUploadMsg({ type: "ok", text: "Código cargado correctamente ✓" });
-    setTimeout(() => setUploadMsg(null), 3000);
-    // Execute one scan immediately
-    const result = executeSTCode(code, { ...variables, ...declaredVars });
-    if (result.success) setExecResult(result);
+  /* ── Acciones de CONTROL DE CPU ── */
+  async function cpu(action) {
+    setBusy(true);
+    try {
+      await apiPost(`/api/plc/${action}`);
+      flash("ok", `CPU ${action.toUpperCase()} ejecutado`);
+    } catch (e) { flash("error", e.message || "Error de CPU"); }
+    finally { setBusy(false); }
   }
 
-  function handleRun() {
-    const { errors: syntaxErrors } = compileSTCode(code);
-    if (syntaxErrors.length > 0) { handleLoad(); return; }
-    setPlcState("RUN");
-    setScanLog([]);
-    scanCountRef.current = 0;
-    setScanCount(0);
+  /* ── Acciones del EDITOR / PROGRAMA ── */
+  async function doValidate() {
+    setBusy(true); setErrors([]);
+    try {
+      const r = await apiPost("/api/plc/program/validate", { source: code });
+      if (r.valid) flash("ok", "Programa válido ✓");
+      else { setErrors((r.errors || []).map(m => ({ message: m }))); flash("error", `${r.errors.length} error(es) de validación`); }
+    } catch (e) { flash("error", e.message || "Error al validar"); }
+    finally { setBusy(false); }
   }
 
-  function handleStop()  { setPlcState("STOP"); }
-  function handleReset() { setPlcState("STOP"); setScanCount(0); setScanLog([]); setExecResult(null); setErrors([]); scanCountRef.current = 0; }
+  async function doDownload() {
+    setBusy(true); setErrors([]);
+    try {
+      const p = await apiPost("/api/plc/program/download", { source: code });
+      setProgram(p);
+      flash("ok", `Descargado a PLC — v${p.version} (${p.status})`);
+    } catch (e) {
+      if (e.errors) setErrors(e.errors.map(m => ({ message: m })));
+      flash("error", e.message || "Descarga rechazada");
+    } finally { setBusy(false); }
+  }
+
+  async function runProgram() {
+    setBusy(true);
+    try { setProgram(await apiPost("/api/plc/program/run")); flash("ok", "Programa en ejecución ▶"); }
+    catch (e) { flash("error", e.message || "No se pudo iniciar (¿descargaste el programa?)"); }
+    finally { setBusy(false); }
+  }
+  async function stopProgram() {
+    setBusy(true);
+    try { setProgram(await apiPost("/api/plc/program/stop")); flash("ok", "Programa detenido ■"); }
+    catch (e) { flash("error", e.message); } finally { setBusy(false); }
+  }
+  async function resetProgram() {
+    setBusy(true); setErrors([]);
+    try { setProgram(await apiPost("/api/plc/program/reset")); flash("ok", "Runtime reiniciado ↺"); }
+    catch (e) { flash("error", e.message); } finally { setBusy(false); }
+  }
+
+  /* ── SAVE / LOAD LOCAL (navegador) ── */
+  function saveLocal() {
+    try { localStorage.setItem(STORAGE_KEY, code); flash("ok", "Código guardado en el navegador"); }
+    catch { flash("error", "No se pudo guardar localmente"); }
+  }
+  function loadLocal() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) { setCode(saved); flash("ok", "Código cargado desde el navegador"); }
+      else flash("error", "No hay código guardado para este PLC");
+    } catch { flash("error", "No se pudo cargar"); }
+  }
 
   function applyTemplate(key) {
     setCode(CODE_TEMPLATES[key]);
-    const decls = extractVarDeclarations(CODE_TEMPLATES[key]);
-    setVariables(prev => ({ ...prev, ...decls }));
     setShowTemplates(false);
-    setPlcState("STOP");
     setErrors([]);
   }
 
-  function addVariable() {
-    if (!newVarName.trim()) return;
-    const val = newVarVal.toUpperCase() === 'TRUE' ? true
-              : newVarVal.toUpperCase() === 'FALSE' ? false
-              : isNaN(Number(newVarVal)) ? newVarVal
-              : Number(newVarVal);
-    setVariables(prev => ({ ...prev, [newVarName.trim()]: val }));
-    setNewVarName(""); setNewVarVal("");
+  /* ── Forzar variable de proceso (impacto real vía /api/process/set) ── */
+  async function forceVar(name, raw) {
+    setEditVar(null);
+    const num = Number(raw);
+    if (Number.isNaN(num)) { flash("error", "Valor numérico requerido"); return; }
+    const map = { TEMPERATURE: "temperature", PRESSURE: "pressure", MOTOR_SPEED: "motor_speed", VALVE_POSITION: "valve_position" };
+    const field = map[name];
+    if (!field) { flash("error", "Variable no forzable"); return; }
+    try { await apiPost("/api/process/set", { [field]: num }); flash("ok", `${name} forzada a ${num}`); }
+    catch (e) { flash("error", e.message || "Error al forzar variable"); }
   }
 
-  function modifyVarValue(name, raw) {
-    const val = raw.toUpperCase() === 'TRUE' ? true
-              : raw.toUpperCase() === 'FALSE' ? false
-              : isNaN(Number(raw)) ? raw : Number(raw);
-    setVariables(prev => ({ ...prev, [name]: val }));
-    setEditingVar(null);
-  }
+  const stateColor = { RUN: C.green, STOP: C.amber, FAULT: C.red, ERROR: C.red }[cpuState] || C.dim;
 
-  /* ── Status bar ── */
-  const stateColor = { STOP: C.amber, RUN: C.green, ERROR: C.red }[plcState];
+  /* ── Variables de proceso en vivo para la tabla ── */
+  const liveVars = [
+    { name: "TEMPERATURE",    value: proc.temperature,    unit: "°C",  editable: true },
+    { name: "PRESSURE",       value: proc.pressure,       unit: "bar", editable: true },
+    { name: "MOTOR_SPEED",    value: proc.motor_speed,    unit: "RPM", editable: true },
+    { name: "VALVE_POSITION", value: proc.valve_position, unit: "%",   editable: true },
+    { name: "PRODUCTION_RATE",value: proc.production_rate,unit: "%",   editable: false },
+    { name: "ALARM",          value: proc.process_alarm,  unit: "",    editable: false },
+  ];
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: C.bg, fontFamily: "'Segoe UI', sans-serif" }}>
 
       {/* ── TOP BAR ── */}
-      <div style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 20px", background:C.bg2, borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
-        <button onClick={onBack} style={{ background:"none", border:`1px solid ${C.border}`, color:C.dim, padding:"4px 12px", borderRadius:5, cursor:"pointer", fontSize:10, fontFamily:C.mono }}>
-          ← VOLVER
-        </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 20px", background: C.bg2, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+        <button onClick={onBack} style={{ background: "none", border: `1px solid ${C.border}`, color: C.dim, padding: "4px 12px", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: C.mono }}>← VOLVER</button>
 
-        {/* CPU badge */}
-        <div style={{ display:"flex", alignItems:"center", gap:8, background:C.bg3, border:`1px solid ${C.accent}33`, borderRadius:6, padding:"5px 12px" }}>
-          <div style={{ fontSize:14 }}>🖥</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.bg3, border: `1px solid ${C.accent}33`, borderRadius: 6, padding: "5px 12px" }}>
+          <div style={{ fontSize: 14 }}>🖥</div>
           <div>
-            <div style={{ color:C.accent, fontSize:11, fontFamily:C.mono, fontWeight:700, letterSpacing:".05em" }}>{asset.id}</div>
-            <div style={{ color:C.dim, fontSize:9 }}>{asset.model || asset.vendor}</div>
+            <div style={{ color: C.accent, fontSize: 11, fontFamily: C.mono, fontWeight: 700, letterSpacing: ".05em" }}>{asset.id}</div>
+            <div style={{ color: C.dim, fontSize: 9 }}>{asset.model || asset.vendor || "PLC"}</div>
           </div>
         </div>
 
-        {/* Estado */}
-        <div style={{ display:"flex", alignItems:"center", gap:6, background:`${stateColor}10`, border:`1px solid ${stateColor}44`, borderRadius:5, padding:"5px 10px" }}>
-          <div style={{ width:8, height:8, borderRadius:"50%", background:stateColor, boxShadow:`0 0 6px ${stateColor}`, animation: plcState==="RUN" ? "blink 1s infinite" : "none" }}/>
-          <span style={{ color:stateColor, fontFamily:C.mono, fontSize:11, fontWeight:700 }}>{plcState}</span>
+        {/* CPU state (backend) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: `${stateColor}10`, border: `1px solid ${stateColor}44`, borderRadius: 5, padding: "5px 10px" }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: stateColor, boxShadow: `0 0 6px ${stateColor}`, animation: cpuState === "RUN" ? "blink 1s infinite" : "none" }} />
+          <span style={{ color: stateColor, fontFamily: C.mono, fontSize: 11, fontWeight: 700 }}>CPU {cpuState}</span>
         </div>
 
-        {/* Upload message */}
-        {uploadMsg && (
-          <div style={{ color: uploadMsg.type === "ok" ? C.green : C.red, fontSize:10, fontFamily:C.mono, background:`${uploadMsg.type==="ok"?C.green:C.red}10`, padding:"3px 10px", borderRadius:4, border:`1px solid ${uploadMsg.type==="ok"?C.green:C.red}44` }}>
-            {uploadMsg.text}
+        {/* Program status */}
+        <div style={{ color: progRunning ? C.green : C.dim, fontFamily: C.mono, fontSize: 10 }}>
+          PROG: {progStatus}{progRunning ? ` · scan #${scanCount}` : ""}
+        </div>
+
+        {msg && (
+          <div style={{ color: msg.type === "ok" ? C.green : C.red, fontSize: 10, fontFamily: C.mono, background: `${msg.type === "ok" ? C.green : C.red}10`, padding: "3px 10px", borderRadius: 4, border: `1px solid ${msg.type === "ok" ? C.green : C.red}44` }}>
+            {msg.text}
           </div>
         )}
 
-        <div style={{ flex:1 }}/>
+        <div style={{ flex: 1 }} />
 
-        {/* Controls */}
-        {[
-          { label:"▶ RUN",    fn: handleRun,   col: C.green,  dis: plcState === "RUN"   },
-          { label:"■ STOP",   fn: handleStop,  col: C.red,    dis: plcState === "STOP"  },
-          { label:"↺ RESET",  fn: handleReset, col: C.amber,  dis: false                },
-          { label:"↑ CARGAR", fn: handleLoad,  col: C.accent, dis: false                },
-        ].map(({ label, fn, col, dis }) => (
-          <button key={label} onClick={fn} disabled={dis}
-            style={{ background: dis ? "transparent" : `${col}18`, border:`1px solid ${dis ? C.border : col}`, color: dis ? C.dim : col, padding:"6px 14px", borderRadius:5, cursor: dis ? "not-allowed" : "pointer", fontFamily:C.mono, fontSize:10, fontWeight:700, letterSpacing:".04em", transition:"all .15s" }}>
-            {label}
-          </button>
-        ))}
-
-        {/* Scan info */}
-        {plcState === "RUN" && (
-          <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, textAlign:"right" }}>
-            <div>SCAN #{scanCount}</div>
-            <div>{scanTime} ms</div>
+        {!backendUp && (
+          <div style={{ color: C.red, fontSize: 10, fontFamily: C.mono, border: `1px solid ${C.red}44`, borderRadius: 4, padding: "3px 10px" }}>
+            ⚠ Backend sin conexión (inicia uvicorn)
           </div>
         )}
       </div>
 
       {/* ── TABS ── */}
-      <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${C.border}`, background:C.bg2, flexShrink:0 }}>
+      <div style={{ display: "flex", gap: 0, borderBottom: `1px solid ${C.border}`, background: C.bg2, flexShrink: 0 }}>
         {[
-          { id:"editor",      label:"  EDITOR  " },
-          { id:"variables",   label:"  VARIABLES  " },
-          { id:"diagnostics", label:"  DIAGNÓSTICO  " },
-          { id:"info",        label:"  CPU INFO  " },
+          { id: "control",     label: "  CONTROL  " },
+          { id: "variables",   label: "  VARIABLES  " },
+          { id: "diagnostics", label: "  DIAGNÓSTICO  " },
+          { id: "docs",        label: "  DOCUMENTACIÓN  " },
+          { id: "info",        label: "  CPU INFO  " },
         ].map(({ id, label }) => (
           <button key={id} onClick={() => setTab(id)} style={{
-            background:  tab === id ? C.bg3 : "transparent",
-            border:      "none",
+            background: tab === id ? C.bg3 : "transparent", border: "none",
             borderBottom: tab === id ? `2px solid ${C.accent}` : "2px solid transparent",
-            color:       tab === id ? C.accent : C.dim,
-            padding:     "10px 16px", cursor:"pointer", fontFamily:C.mono, fontSize:10, fontWeight:700, letterSpacing:".08em", transition:"all .15s",
+            color: tab === id ? C.accent : C.dim, padding: "10px 16px", cursor: "pointer",
+            fontFamily: C.mono, fontSize: 10, fontWeight: 700, letterSpacing: ".08em",
           }}>{label}</button>
         ))}
       </div>
 
       {/* ── CONTENT ── */}
-      <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
 
-        {/* ─── EDITOR TAB ─── */}
-        {tab === "editor" && (
-          <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        {/* ═══════════ CONTROL TAB (operador + editor) ═══════════ */}
+        {tab === "control" && (
+          <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
-            {/* Toolbar */}
-            <div style={{ display:"flex", gap:8, padding:"8px 16px", background:C.bg3, borderBottom:`1px solid ${C.border}`, flexShrink:0, alignItems:"center" }}>
-              <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono, letterSpacing:".1em" }}>PLANTILLAS:</span>
-              <div style={{ position:"relative" }}>
-                <button onClick={() => setShowTemplates(p => !p)} style={{ background:C.bg2, border:`1px solid ${C.border}`, color:C.text, padding:"4px 10px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:C.mono }}>
-                  Cargar plantilla ▾
-                </button>
-                {showTemplates && (
-                  <div style={{ position:"absolute", top:"100%", left:0, zIndex:100, background:C.bg2, border:`1px solid ${C.border}`, borderRadius:6, marginTop:2, minWidth:220, boxShadow:"0 8px 24px rgba(0,0,0,.5)" }}>
-                    {Object.entries({ blank:"Plantilla vacía", temperature_control:"Control de temperatura", production_counter:"Contador de producción", safety_interlock:"Enclavamiento de seguridad" }).map(([k,v]) => (
-                      <button key={k} onClick={() => applyTemplate(k)} style={{ display:"block", width:"100%", background:"none", border:"none", color:C.text, padding:"8px 14px", cursor:"pointer", textAlign:"left", fontSize:10, fontFamily:C.mono, borderBottom:`1px solid ${C.border}44` }}
-                        onMouseEnter={e => e.target.style.background = C.bg3}
-                        onMouseLeave={e => e.target.style.background = "none"}>
-                        {v}
-                      </button>
-                    ))}
-                  </div>
-                )}
+            {/* ── IZQUIERDA: PLC OPERATOR CONTROL ── */}
+            <div style={{ width: 320, flexShrink: 0, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", overflow: "auto" }}>
+              <div style={{ padding: "10px 16px", background: C.bg2, borderBottom: `1px solid ${C.border}`, color: C.dim, fontSize: 10, fontFamily: C.mono, letterSpacing: ".1em", fontWeight: 700 }}>
+                PLC OPERATOR CONTROL
               </div>
-              <div style={{ flex:1 }}/>
-              <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>IEC 61131-3 Structured Text</span>
-            </div>
 
-            {/* Error banner */}
-            {errors.length > 0 && (
-              <div style={{ background:"rgba(239,68,68,.1)", border:"1px solid rgba(239,68,68,.3)", padding:"8px 16px", flexShrink:0 }}>
-                {errors.map((e, i) => (
-                  <div key={i} style={{ color:C.red, fontSize:10, fontFamily:C.mono }}>⚠ {e.message}</div>
+              <div style={{ padding: 16, display: "flex", gap: 8 }}>
+                {[
+                  { label: "RUN",   fn: () => cpu("run"),   col: C.green, dis: cpuState === "RUN" },
+                  { label: "STOP",  fn: () => cpu("stop"),  col: C.red,   dis: cpuState === "STOP" },
+                  { label: "RESET", fn: () => cpu("reset"), col: C.amber, dis: false },
+                ].map(({ label, fn, col, dis }) => (
+                  <button key={label} onClick={fn} disabled={dis || busy}
+                    style={{ flex: 1, background: dis ? "transparent" : `${col}18`, border: `1px solid ${dis ? C.border : col}`, color: dis ? C.dim : col, padding: "10px 0", borderRadius: 5, cursor: dis || busy ? "not-allowed" : "pointer", fontFamily: C.mono, fontSize: 11, fontWeight: 700 }}>
+                    {label}
+                  </button>
                 ))}
               </div>
-            )}
 
-            {/* Code editor — textarea + highlight overlay */}
-            <div style={{ flex:1, position:"relative", overflow:"hidden" }}>
-              {/* Line numbers */}
-              <div style={{
-                position:"absolute", left:0, top:0, bottom:0, width:42,
-                background:C.bg3, borderRight:`1px solid ${C.border}`,
-                display:"flex", flexDirection:"column", paddingTop:16,
-                overflowY:"hidden", pointerEvents:"none", zIndex:2,
-              }}>
-                {code.split('\n').map((_, i) => (
-                  <div key={i} style={{ fontSize:11, fontFamily:C.mono, color:"#1e3a5f", lineHeight:"1.6", height:20, textAlign:"right", paddingRight:8 }}>
-                    {i+1}
+              {/* KPIs del proceso real */}
+              <div style={{ padding: "0 16px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {[
+                  { k: "TEMPERATURA", v: proc.temperature,     u: "°C",  c: C.amber },
+                  { k: "PRESIÓN",     v: proc.pressure,        u: "bar", c: C.accent },
+                  { k: "MOTOR",       v: proc.motor_speed,     u: "RPM", c: C.green },
+                  { k: "VÁLVULA",     v: proc.valve_position,  u: "%",   c: C.purple },
+                  { k: "PRODUCCIÓN",  v: proc.production_rate, u: "%",   c: C.green },
+                  { k: "ESTADO",      v: live?.plant?.status,  u: "",    c: live?.plant?.status === "RUNNING" ? C.green : C.red, text: true },
+                ].map(({ k, v, u, c, text }) => (
+                  <div key={k} style={{ background: C.bg3, border: `1px solid ${C.border}`, borderRadius: 6, padding: "10px 12px" }}>
+                    <div style={{ color: C.dim, fontSize: 8, fontFamily: C.mono, letterSpacing: ".1em", marginBottom: 4 }}>{k}</div>
+                    <div style={{ color: c, fontSize: 16, fontFamily: C.mono, fontWeight: 700 }}>
+                      {v == null ? "—" : text ? v : Number(v).toFixed(u === "°C" || u === "bar" ? 1 : 0)}
+                      <span style={{ fontSize: 9, color: C.dim, marginLeft: 3 }}>{u}</span>
+                    </div>
                   </div>
                 ))}
               </div>
 
-              {/* Actual textarea */}
-              <textarea
-                ref={editorRef}
-                value={code}
-                onChange={e => setCode(e.target.value)}
-                spellCheck={false}
-                style={{
-                  position:"absolute", inset:0, resize:"none",
-                  paddingLeft:54, paddingTop:16, paddingRight:16, paddingBottom:16,
-                  background:"transparent", border:"none",
-                  color:C.text, fontSize:13, fontFamily:C.mono, lineHeight:"1.6",
-                  outline:"none", width:"100%", height:"100%", boxSizing:"border-box",
-                  caretColor: C.accent, zIndex:1,
-                  whiteSpace:"pre", overflowX:"auto",
-                  tabSize:2,
-                }}
-                onKeyDown={e => {
-                  if (e.key === 'Tab') {
-                    e.preventDefault();
-                    const s = e.target.selectionStart;
-                    const v = code;
-                    setCode(v.slice(0, s) + '  ' + v.slice(s));
-                    requestAnimationFrame(() => { e.target.selectionStart = e.target.selectionEnd = s + 2; });
-                  }
-                }}
-              />
+              <div style={{ padding: "0 16px 16px", color: C.dim, fontSize: 9, fontFamily: C.mono, lineHeight: 1.6 }}>
+                Los valores se leen en vivo del motor de simulación. Cuando el programa
+                escribe una salida, estos KPIs cambian igual que la producción real.
+              </div>
             </div>
 
-            {/* Status bar bottom */}
-            <div style={{ display:"flex", gap:16, padding:"4px 16px", background:C.bg3, borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
-              <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>{code.split('\n').length} líneas</span>
-              <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>{code.length} chars</span>
-              <span style={{ color: plcState === "RUN" ? C.green : C.dim, fontSize:9, fontFamily:C.mono }}>
-                {plcState === "RUN" ? `● Ejecutando (scan #${scanCount})` : "○ Detenido"}
-              </span>
-              <div style={{ flex:1 }}/>
-              <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>Tab=2esp · ↑CARGAR para validar · ▶RUN para ejecutar</span>
+            {/* ── DERECHA: PLC PROGRAM EDITOR ── */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{ padding: "10px 16px", background: C.bg2, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center" }}>
+                <span style={{ color: C.dim, fontSize: 10, fontFamily: C.mono, letterSpacing: ".1em", fontWeight: 700 }}>PLC PROGRAM EDITOR</span>
+                <div style={{ flex: 1 }} />
+                <span style={{ color: C.dim, fontSize: 9, fontFamily: C.mono }}>
+                  PROGRAM: {program?.name || "MAIN"} · MEM: {progStatus}
+                </span>
+              </div>
+
+              {/* Toolbar plantillas */}
+              <div style={{ display: "flex", gap: 8, padding: "8px 16px", background: C.bg3, borderBottom: `1px solid ${C.border}`, alignItems: "center", flexShrink: 0 }}>
+                <span style={{ color: C.dim, fontSize: 9, fontFamily: C.mono, letterSpacing: ".1em" }}>PLANTILLAS:</span>
+                <div style={{ position: "relative" }}>
+                  <button onClick={() => setShowTemplates(p => !p)} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, padding: "4px 10px", borderRadius: 4, cursor: "pointer", fontSize: 9, fontFamily: C.mono }}>
+                    Cargar plantilla ▾
+                  </button>
+                  {showTemplates && (
+                    <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 100, background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 6, marginTop: 2, minWidth: 220, boxShadow: "0 8px 24px rgba(0,0,0,.5)" }}>
+                      {Object.entries({ blank: "Plantilla vacía", safe_default: "Programa seguro (ref.)", temperature_control: "Control de temperatura", pressure_relief: "Alivio de presión" }).map(([k, v]) => (
+                        <button key={k} onClick={() => applyTemplate(k)} style={{ display: "block", width: "100%", background: "none", border: "none", color: C.text, padding: "8px 14px", cursor: "pointer", textAlign: "left", fontSize: 10, fontFamily: C.mono, borderBottom: `1px solid ${C.border}44` }}>
+                          {v}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div style={{ flex: 1 }} />
+                <span style={{ color: C.dim, fontSize: 9, fontFamily: C.mono }}>IEC 61131-3 Structured Text</span>
+              </div>
+
+              {/* Errores */}
+              {errors.length > 0 && (
+                <div style={{ background: "rgba(239,68,68,.1)", border: "1px solid rgba(239,68,68,.3)", padding: "8px 16px", flexShrink: 0, maxHeight: 120, overflow: "auto" }}>
+                  {errors.map((e, i) => (
+                    <div key={i} style={{ color: C.red, fontSize: 10, fontFamily: C.mono }}>⚠ {e.message}</div>
+                  ))}
+                </div>
+              )}
+
+              {/* Editor */}
+              <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+                <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 42, background: C.bg3, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", paddingTop: 16, overflowY: "hidden", pointerEvents: "none", zIndex: 2 }}>
+                  {code.split("\n").map((_, i) => (
+                    <div key={i} style={{ fontSize: 11, fontFamily: C.mono, color: "#1e3a5f", lineHeight: "1.6", height: 20, textAlign: "right", paddingRight: 8 }}>{i + 1}</div>
+                  ))}
+                </div>
+                <textarea
+                  ref={editorRef}
+                  value={code}
+                  onChange={e => setCode(e.target.value)}
+                  spellCheck={false}
+                  style={{ position: "absolute", inset: 0, resize: "none", paddingLeft: 54, paddingTop: 16, paddingRight: 16, paddingBottom: 16, background: "transparent", border: "none", color: C.text, fontSize: 13, fontFamily: C.mono, lineHeight: "1.6", outline: "none", width: "100%", height: "100%", boxSizing: "border-box", caretColor: C.accent, zIndex: 1, whiteSpace: "pre", overflowX: "auto", tabSize: 2 }}
+                  onKeyDown={e => {
+                    if (e.key === "Tab") {
+                      e.preventDefault();
+                      const s = e.target.selectionStart; const v = code;
+                      setCode(v.slice(0, s) + "  " + v.slice(s));
+                      requestAnimationFrame(() => { e.target.selectionStart = e.target.selectionEnd = s + 2; });
+                    }
+                  }}
+                />
+              </div>
+
+              {/* Botonera del editor */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "10px 16px", background: C.bg3, borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+                {[
+                  { label: "VALIDATE",      fn: doValidate,  col: C.accent },
+                  { label: "SAVE",          fn: saveLocal,   col: C.dim },
+                  { label: "LOAD LOCAL",    fn: loadLocal,   col: C.dim },
+                  { label: "DOWNLOAD TO PLC", fn: doDownload, col: C.purple },
+                  { label: "RUN PROGRAM",   fn: runProgram,  col: C.green,  dis: progRunning },
+                  { label: "STOP PROGRAM",  fn: stopProgram, col: C.red,    dis: !progRunning },
+                  { label: "RESET PROGRAM", fn: resetProgram,col: C.amber },
+                ].map(({ label, fn, col, dis }) => (
+                  <button key={label} onClick={fn} disabled={busy || dis}
+                    style={{ background: busy || dis ? "transparent" : `${col}18`, border: `1px solid ${busy || dis ? C.border : col}`, color: busy || dis ? C.dim : col, padding: "7px 14px", borderRadius: 5, cursor: busy || dis ? "not-allowed" : "pointer", fontFamily: C.mono, fontSize: 10, fontWeight: 700, letterSpacing: ".03em" }}>
+                    {label}
+                  </button>
+                ))}
+                <div style={{ flex: 1 }} />
+                <span style={{ color: C.dim, fontSize: 9, fontFamily: C.mono, alignSelf: "center" }}>
+                  {code.split("\n").length} líneas · {code.length} chars
+                </span>
+              </div>
+
+              <div style={{ padding: "6px 16px", background: C.bg2, borderTop: `1px solid ${C.border}`, color: C.dim, fontSize: 9, fontFamily: C.mono, flexShrink: 0 }}>
+                Flujo: VALIDATE → DOWNLOAD TO PLC → RUN PROGRAM. El runtime del backend ejecuta el programa y cambia la producción real.
+              </div>
             </div>
           </div>
         )}
 
-        {/* ─── VARIABLES TAB ─── */}
+        {/* ═══════════ VARIABLES TAB ═══════════ */}
         {tab === "variables" && (
-          <div style={{ flex:1, overflow:"auto", padding:16 }}>
-            <div style={{ marginBottom:12, display:"flex", alignItems:"center", gap:8 }}>
-              <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono, letterSpacing:".1em" }}>
-                TABLA DE VARIABLES — {Object.keys(variables).length} variables
-              </span>
-              <div style={{ flex:1 }}/>
-              {plcState === "RUN" && (
-                <div style={{ color:C.green, fontSize:9, fontFamily:C.mono, display:"flex", gap:4, alignItems:"center" }}>
-                  <div style={{ width:6, height:6, borderRadius:"50%", background:C.green, animation:"blink 1s infinite" }}/>
-                  ONLINE — scan #{scanCount}
-                </div>
-              )}
+          <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
+            <div style={{ marginBottom: 12, color: C.dim, fontSize: 9, fontFamily: C.mono, letterSpacing: ".1em" }}>
+              VARIABLES DE PROCESO EN VIVO — editar fuerza el valor en el proceso real (vía HMI/operador)
             </div>
-
-            {/* Variable table */}
-            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11, fontFamily:C.mono }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, fontFamily: C.mono }}>
               <thead>
-                <tr style={{ background:C.bg3 }}>
-                  {["Variable","Valor","Tipo","Acción"].map(h => (
-                    <th key={h} style={{ padding:"8px 12px", textAlign:"left", color:C.dim, fontSize:9, letterSpacing:".1em", borderBottom:`1px solid ${C.border}` }}>{h}</th>
+                <tr style={{ background: C.bg3 }}>
+                  {["Variable", "Valor", "Unidad", "Acción"].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", textAlign: "left", color: C.dim, fontSize: 9, letterSpacing: ".1em", borderBottom: `1px solid ${C.border}` }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(variables).map(([name, val], i) => {
-                  const isEditing = editingVar?.name === name;
-                  const typeLabel = typeof val === 'boolean' ? 'BOOL' : Number.isInteger(val) ? 'INT' : 'REAL';
-                  const valColor  = typeof val === 'boolean' ? (val ? C.green : C.red) : typeof val === 'number' ? C.accent : C.text;
+                {liveVars.map((v, i) => {
+                  const isEditing = editVar?.name === v.name;
+                  const isBool = typeof v.value === "boolean";
+                  const col = isBool ? (v.value ? C.red : C.green) : C.accent;
                   return (
-                    <tr key={name} style={{ background: i%2===0 ? "transparent" : `${C.bg3}88`, borderBottom:`1px solid ${C.border}22` }}>
-                      <td style={{ padding:"7px 12px", color:C.purple, fontWeight:600 }}>{name}</td>
-                      <td style={{ padding:"7px 12px", color:valColor, fontWeight:700, minWidth:120 }}>
+                    <tr key={v.name} style={{ background: i % 2 === 0 ? "transparent" : `${C.bg3}88`, borderBottom: `1px solid ${C.border}22` }}>
+                      <td style={{ padding: "7px 12px", color: C.purple, fontWeight: 600 }}>{v.name}</td>
+                      <td style={{ padding: "7px 12px", color: col, fontWeight: 700, minWidth: 120 }}>
                         {isEditing ? (
-                          <input
-                            autoFocus
-                            defaultValue={formatVarValue(val)}
-                            onBlur={e => modifyVarValue(name, e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') modifyVarValue(name, e.target.value); if (e.key === 'Escape') setEditingVar(null); }}
-                            style={{ background:C.bg3, border:`1px solid ${C.accent}`, color:C.text, padding:"2px 6px", borderRadius:4, fontSize:11, fontFamily:C.mono, width:100 }}
-                          />
+                          <input autoFocus defaultValue={v.value}
+                            onBlur={e => forceVar(v.name, e.target.value)}
+                            onKeyDown={e => { if (e.key === "Enter") forceVar(v.name, e.target.value); if (e.key === "Escape") setEditVar(null); }}
+                            style={{ background: C.bg3, border: `1px solid ${C.accent}`, color: C.text, padding: "2px 6px", borderRadius: 4, fontSize: 11, fontFamily: C.mono, width: 100 }} />
                         ) : (
-                          formatVarValue(val)
+                          v.value == null ? "—" : isBool ? (v.value ? "TRUE" : "FALSE") : Number(v.value).toFixed(2)
                         )}
                       </td>
-                      <td style={{ padding:"7px 12px", color:C.dim }}>{typeLabel}</td>
-                      <td style={{ padding:"7px 12px" }}>
-                        <button onClick={() => setEditingVar({ name, value: val })}
-                          style={{ background:"none", border:`1px solid ${C.border}`, color:C.dim, padding:"2px 8px", borderRadius:3, cursor:"pointer", fontSize:9, fontFamily:C.mono }}
-                          onMouseEnter={e => e.target.style.borderColor=C.accent}
-                          onMouseLeave={e => e.target.style.borderColor=C.border}>
-                          Editar
-                        </button>
+                      <td style={{ padding: "7px 12px", color: C.dim }}>{v.unit || "—"}</td>
+                      <td style={{ padding: "7px 12px" }}>
+                        {v.editable ? (
+                          <button onClick={() => setEditVar({ name: v.name, value: v.value })}
+                            style={{ background: "none", border: `1px solid ${C.border}`, color: C.dim, padding: "2px 8px", borderRadius: 3, cursor: "pointer", fontSize: 9, fontFamily: C.mono }}>
+                            Forzar
+                          </button>
+                        ) : (
+                          <span style={{ color: C.dim, fontSize: 9 }}>solo lectura</span>
+                        )}
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
-
-            {/* Add variable */}
-            <div style={{ marginTop:16, padding:12, background:C.bg3, borderRadius:8, border:`1px solid ${C.border}` }}>
-              <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, letterSpacing:".1em", marginBottom:8 }}>AGREGAR VARIABLE</div>
-              <div style={{ display:"flex", gap:8 }}>
-                <input value={newVarName} onChange={e => setNewVarName(e.target.value)} placeholder="Nombre"
-                  style={{ background:C.bg2, border:`1px solid ${C.border}`, color:C.text, padding:"6px 10px", borderRadius:5, fontSize:11, fontFamily:C.mono, width:160, outline:"none" }}/>
-                <input value={newVarVal} onChange={e => setNewVarVal(e.target.value)} placeholder="Valor inicial"
-                  style={{ background:C.bg2, border:`1px solid ${C.border}`, color:C.text, padding:"6px 10px", borderRadius:5, fontSize:11, fontFamily:C.mono, width:120, outline:"none" }}/>
-                <button onClick={addVariable}
-                  style={{ background:`${C.accent}18`, border:`1px solid ${C.accent}44`, color:C.accent, padding:"6px 14px", borderRadius:5, cursor:"pointer", fontSize:10, fontFamily:C.mono }}>
-                  + Agregar
-                </button>
-              </div>
-            </div>
           </div>
         )}
 
-        {/* ─── DIAGNOSTICS TAB ─── */}
+        {/* ═══════════ DIAGNOSTICS TAB ═══════════ */}
         {tab === "diagnostics" && (
-          <div style={{ flex:1, overflow:"auto", padding:16 }}>
-            {/* Error list */}
-            {errors.length > 0 && (
-              <div style={{ marginBottom:16 }}>
-                <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, letterSpacing:".1em", marginBottom:8 }}>ERRORES</div>
-                {errors.map((e, i) => (
-                  <div key={i} style={{ background:"rgba(239,68,68,.08)", border:"1px solid rgba(239,68,68,.2)", borderRadius:6, padding:"8px 12px", marginBottom:6, color:C.red, fontSize:11, fontFamily:C.mono }}>
-                    ⚠ {e.message}
-                  </div>
-                ))}
+          <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
+            {program?.last_error ? (
+              <div style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.2)", borderRadius: 6, padding: "10px 14px", marginBottom: 16, color: C.red, fontSize: 11, fontFamily: C.mono }}>
+                ⚠ ÚLTIMO ERROR DEL RUNTIME: {program.last_error}
               </div>
-            )}
+            ) : null}
 
-            {/* Scan log */}
-            <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, letterSpacing:".1em", marginBottom:8 }}>
-              LOG DE CAMBIOS — últimas {scanLog.length} entradas
-            </div>
-            {scanLog.length === 0 ? (
-              <div style={{ color:C.dim, fontSize:10, fontFamily:C.mono, padding:12 }}>
-                {plcState === "RUN" ? "Esperando cambios de variables..." : "Ejecuta el programa en modo RUN para ver cambios."}
-              </div>
-            ) : (
-              <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-                {scanLog.map((entry, i) => (
-                  <div key={i} style={{ background:C.bg3, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", fontSize:10, fontFamily:C.mono }}>
-                    <div style={{ color:C.dim, marginBottom:4 }}>[{entry.ts}] Scan #{entry.scan}</div>
-                    {Object.entries(entry.changes).map(([k, { from, to }]) => (
-                      <div key={k} style={{ color:C.text }}>
-                        <span style={{ color:C.purple }}>{k}</span>
-                        <span style={{ color:C.dim }}> : </span>
-                        <span style={{ color:C.red }}>{formatVarValue(from)}</span>
-                        <span style={{ color:C.dim }}> → </span>
-                        <span style={{ color:C.green }}>{formatVarValue(to)}</span>
-                      </div>
-                    ))}
+            <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono, letterSpacing: ".1em", marginBottom: 8 }}>EVENTOS DEL PLC (backend)</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {(live?.events || []).filter(e => (e.source || "").includes("PLC")).slice(-30).reverse().map((e, i) => {
+                const sev = (e.severity || "INFO").toUpperCase();
+                const c = sev === "CRITICAL" ? C.red : sev === "HIGH" ? C.amber : sev === "WARNING" ? C.amber : C.dim;
+                return (
+                  <div key={i} style={{ background: C.bg3, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px 12px", fontSize: 10, fontFamily: C.mono }}>
+                    <span style={{ color: c, fontWeight: 700 }}>[{sev}]</span>{" "}
+                    <span style={{ color: C.accent }}>{e.event_type}</span>{" "}
+                    <span style={{ color: C.text }}>{e.message}</span>
                   </div>
-                ))}
-              </div>
-            )}
+                );
+              })}
+              {(!live?.events || live.events.filter(e => (e.source || "").includes("PLC")).length === 0) && (
+                <div style={{ color: C.dim, fontSize: 10, fontFamily: C.mono, padding: 12 }}>Sin eventos del PLC todavía.</div>
+              )}
+            </div>
           </div>
         )}
 
-        {/* ─── CPU INFO TAB ─── */}
+        {/* ═══════════ DOCS TAB ═══════════ */}
+        {tab === "docs" && (
+          <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ color: C.accent, fontFamily: C.mono, fontSize: 14, margin: 0 }}>DOCUMENTACIÓN DEL EQUIPO</h3>
+              <div style={{ flex: 1 }} />
+              <button onClick={() => downloadText(`${asset.id}_doc.txt`, buildDocText(asset))}
+                style={{ background: `${C.accent}18`, border: `1px solid ${C.accent}`, color: C.accent, padding: "6px 14px", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: C.mono, fontWeight: 700 }}>
+                ⬇ Descargar documentación
+              </button>
+            </div>
+            <pre style={{ color: C.text, fontSize: 12, fontFamily: C.mono, lineHeight: 1.6, whiteSpace: "pre-wrap", background: C.bg3, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16 }}>
+              {buildDocText(asset)}
+            </pre>
+          </div>
+        )}
+
+        {/* ═══════════ CPU INFO TAB ═══════════ */}
         {tab === "info" && (
-          <div style={{ flex:1, overflow:"auto", padding:16 }}>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+          <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
               {[
-                { label:"Device ID",     value: asset.id },
-                { label:"Nombre",        value: asset.name },
-                { label:"Tipo",          value: asset.type },
-                { label:"Vendor",        value: asset.vendor },
-                { label:"Modelo",        value: asset.model || "—" },
-                { label:"IP Address",    value: asset.ip || "—" },
-                { label:"VLAN",          value: asset.vlan || "—" },
-                { label:"Purdue Level",  value: `Nivel ${asset.purdueLevel}` },
-                { label:"Protocolos",    value: (asset.protocols||[]).join(", ") || "—" },
-                { label:"Firmware",      value: asset.firmware || "—" },
-                { label:"Estado",        value: asset.status || "—" },
-                { label:"CPU State",     value: plcState },
+                { label: "Device ID", value: asset.id },
+                { label: "Nombre", value: asset.name },
+                { label: "Tipo", value: asset.type },
+                { label: "Vendor", value: asset.vendor },
+                { label: "Modelo", value: asset.model || "—" },
+                { label: "IP Address", value: asset.ip || "—" },
+                { label: "VLAN", value: asset.vlan || "—" },
+                { label: "Purdue Level", value: asset.purdueLevel != null ? `Nivel ${asset.purdueLevel}` : "—" },
+                { label: "Protocolos", value: (asset.protocols || []).join(", ") || "—" },
+                { label: "Firmware", value: asset.firmware || "—" },
+                { label: "CPU State", value: cpuState },
+                { label: "Programa", value: `${progStatus}${progRunning ? " (RUN)" : ""}` },
               ].map(({ label, value }) => (
-                <div key={label} style={{ background:C.bg3, border:`1px solid ${C.border}`, borderRadius:6, padding:"10px 14px" }}>
-                  <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, letterSpacing:".1em", marginBottom:4 }}>{label}</div>
-                  <div style={{ color:C.text, fontSize:12, fontFamily:C.mono }}>{value}</div>
+                <div key={label} style={{ background: C.bg3, border: `1px solid ${C.border}`, borderRadius: 6, padding: "10px 14px" }}>
+                  <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono, letterSpacing: ".1em", marginBottom: 4 }}>{label}</div>
+                  <div style={{ color: C.text, fontSize: 12, fontFamily: C.mono }}>{value}</div>
                 </div>
               ))}
-            </div>
-
-            {/* Memory bar */}
-            <div style={{ marginTop:16, background:C.bg3, border:`1px solid ${C.border}`, borderRadius:6, padding:"12px 14px" }}>
-              <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, letterSpacing:".1em", marginBottom:8 }}>VARIABLES EN MEMORIA</div>
-              <div style={{ display:"flex", gap:4, alignItems:"center" }}>
-                <div style={{ flex:1, height:8, background:C.bg2, borderRadius:4, overflow:"hidden" }}>
-                  <div style={{ width:`${Math.min(100, Object.keys(variables).length * 5)}%`, height:"100%", background:C.accent, borderRadius:4 }}/>
-                </div>
-                <span style={{ color:C.accent, fontSize:10, fontFamily:C.mono, minWidth:60 }}>{Object.keys(variables).length} vars</span>
-              </div>
             </div>
           </div>
         )}
