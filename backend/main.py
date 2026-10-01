@@ -1,777 +1,293 @@
-from contextlib import asynccontextmanager
 import asyncio
-import threading
-from typing import Optional
-
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-
-from simulation.plant import Plant, LEGITIMATE_PROGRAM
-
-
-# ============================================================
-# PLANT GLOBAL
-# ============================================================
-
-plant = Plant()
-plant_lock = threading.RLock()
-
-
-# ============================================================
-# BACKGROUND SIMULATION
-# ============================================================
-
-async def simulation_loop():
-    """
-    Ejecuta el ciclo de simulación de la planta.
-    El frontend puede consultar /api/state para obtener
-    el estado actualizado.
-    """
-
-    while True:
-        try:
-            with plant_lock:
-                plant.update()
-
-        except Exception as exc:
-            print(f"[SIMULATION ERROR] {exc}")
-
-        await asyncio.sleep(1)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-
-    print("=" * 60)
-    print("OT CYBER RANGE")
-    print("Starting industrial plant simulation...")
-    print("=" * 60)
-
-    # --------------------------------------------------------
-    # Cargar programa PLC legítimo inicial
-    # --------------------------------------------------------
-
-    with plant_lock:
-        try:
-            errors = plant.load_plc_program(LEGITIMATE_PROGRAM)
-
-            if errors:
-                print("[PLC] Program validation failed:")
-                for error in errors:
-                    print(f"  - {error}")
-            else:
-                print("[PLC] Legitimate program loaded successfully")
-
-        except Exception as exc:
-            print(f"[PLC] Could not load legitimate program: {exc}")
-
-    # --------------------------------------------------------
-    # Iniciar simulación
-    # --------------------------------------------------------
-
-    task = asyncio.create_task(simulation_loop())
-
-    print("[SIMULATION] Background process started")
-    print("[API] FastAPI server ready")
-    print("=" * 60)
-
-    yield
-
-    # --------------------------------------------------------
-    # Detener simulación
-    # --------------------------------------------------------
-
-    task.cancel()
-
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-    print("[SIMULATION] Background process stopped")
-
-
-# ============================================================
-# FASTAPI
-# ============================================================
-
+from pydantic import BaseModel
+from simulation.plant import Plant
+from simulation.attack_engine import SCENARIOS
 app = FastAPI(
-    title="OT Cyber Range API",
-    description="Industrial OT Cyber Range simulation backend",
+    title="OT Cyber Range",
+    description="Industrial OT Cyber Range Simulation",
     version="1.0.0",
-    lifespan=lifespan,
 )
-
-
-# ============================================================
-# CORS
-# ============================================================
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# ============================================================
-# PYDANTIC MODELS
-# ============================================================
-
-class MotorRequest(BaseModel):
-    speed: float = Field(..., ge=0, le=2000)
-
-
-class ValveRequest(BaseModel):
-    position: float = Field(..., ge=0, le=100)
-
-
-class RegisterWriteRequest(BaseModel):
-    register: str
-    value: float
-
-
-class ProcessRequest(BaseModel):
-    temperature: Optional[float] = Field(
-        default=None,
-        ge=0,
-        le=150,
+plant = Plant()
+class PLCProgramRequest(BaseModel):
+    source: str
+class AlarmActionRequest(BaseModel):
+    alarm_id: str
+class ProcessSetRequest(BaseModel):
+    temperature:    Optional[float] = None
+    pressure:       Optional[float] = None
+    motor_speed:    Optional[float] = None
+    valve_position: Optional[float] = None
+@app.post("/api/process/set")
+def set_process_values(req: ProcessSetRequest):
+    """Permite al operador cambiar los valores del proceso directamente desde la interfaz."""
+    plant.set_process_values(
+        temperature    = req.temperature,
+        pressure       = req.pressure,
+        motor_speed    = req.motor_speed,
+        valve_position = req.valve_position,
     )
-
-    pressure: Optional[float] = Field(
-        default=None,
-        ge=0,
-        le=20,
-    )
-
-    motor_speed: Optional[float] = Field(
-        default=None,
-        ge=0,
-        le=2000,
-    )
-
-    valve_position: Optional[float] = Field(
-        default=None,
-        ge=0,
-        le=100,
-    )
-
-
+    return plant.get_state()
+class AttackRequest(BaseModel):
+    attack_type: str
 class SetpointRequest(BaseModel):
     variable: str
     value: float
-
-
-class EquipmentStatusRequest(BaseModel):
-    status: str
-
-
-class PLCProgramRequest(BaseModel):
-    source: str
-
-
-class AttackRequest(BaseModel):
-    attack_type: str
-
-
-class AlarmActionRequest(BaseModel):
-    alarm_id: str
-
-
-# ============================================================
-# ROOT
-# ============================================================
-
 @app.get("/")
 def root():
-
     return {
-        "name": "OT Cyber Range API",
-        "version": "1.0.0",
-        "status": "online",
-        "simulation": "running",
+        "application": "OT Cyber Range",
+        "status": "ONLINE",
+        "simulation": "RUNNING",
     }
-
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-@app.get("/health")
-def health():
-
-    return {
-        "status": "healthy",
-        "simulation": "running",
-    }
-
-
-# ============================================================
-# FULL PLANT STATE
-# ============================================================
-
-@app.get("/api/state")
-def get_state():
-
-    with plant_lock:
-        return plant.get_state()
-
-
-# ============================================================
-# INVENTORY
-# ============================================================
-
-@app.get("/api/inventory")
-def get_inventory():
-
-    with plant_lock:
-        return {
-            "count": len(plant.equipment),
-            "equipment": plant.get_inventory(),
-        }
-
-
-# ============================================================
-# EVENTS
-# ============================================================
-
+@app.get("/api/plant")
+def get_plant():
+    return plant.get_state()
+# =====================================================================
+# HMI COMMANDS
+# =====================================================================
+@app.post("/api/hmi/start")
+def hmi_start():
+    plant.resume_production()
+    plant.add_event(
+        "HMI_START",
+        "INFO",
+        "HMI-001",
+        "Production started from HMI"
+    )
+    return plant.get_state()
+@app.post("/api/hmi/stop")
+def hmi_stop():
+    plant.stop_production()
+    plant.add_event(
+        "HMI_STOP",
+        "WARNING",
+        "HMI-001",
+        "Production stopped from HMI"
+    )
+    return plant.get_state()
+@app.post("/api/hmi/reset")
+def hmi_reset():
+    plant.resume_production()
+    plant.add_event(
+        "HMI_RESET",
+        "INFO",
+        "HMI-001",
+        "Production reset from HMI"
+    )
+    return plant.get_state()
+@app.get("/api/plc")
+def get_plc():
+    return plant.plc.get_state()
 @app.get("/api/events")
 def get_events():
-
-    with plant_lock:
-        return {
-            "events": [
-                event.to_dict()
-                for event in plant.events
-            ]
-        }
-
-
-# ============================================================
-# ALARMS
-# ============================================================
-
+    return [event.to_dict() for event in plant.events[-50:]]
+@app.get("/api/inventory")
+def get_inventory():
+    return plant.get_inventory()
 @app.get("/api/alarms")
 def get_alarms():
-
-    with plant_lock:
-        return plant.get_alarms()
-
-
-# ============================================================
-# ACKNOWLEDGE ALARM
-# ============================================================
-
-@app.post("/api/alarms/{alarm_id}/acknowledge")
-def acknowledge_alarm(alarm_id: str):
-
-    with plant_lock:
-
-        try:
-            alarm = plant.acknowledge_alarm(alarm_id)
-
-            return {
-                "success": True,
-                "alarm": alarm,
-            }
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# RESET ALARM
-# ============================================================
-
-@app.post("/api/alarms/{alarm_id}/reset")
-def reset_alarm(alarm_id: str):
-
-    with plant_lock:
-
-        try:
-            alarm = plant.reset_alarm(alarm_id)
-
-            return {
-                "success": True,
-                "alarm": alarm,
-            }
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# MOTOR CONTROL
-# ============================================================
-
-@app.post("/api/motor/speed")
-def change_motor_speed(request: MotorRequest):
-
-    with plant_lock:
-
-        plant.change_motor_speed(
-            request.speed
-        )
-
-        return {
-            "success": True,
-            "state": plant.get_state(),
-        }
-
-
-# ============================================================
-# VALVE CONTROL
-# ============================================================
-
-@app.post("/api/valve/position")
-def change_valve_position(request: ValveRequest):
-
-    with plant_lock:
-
-        plant.change_valve_position(
-            request.position
-        )
-
-        return {
-            "success": True,
-            "state": plant.get_state(),
-        }
-
-
-# ============================================================
-# PROCESS VALUES
-# ============================================================
-
-@app.post("/api/process")
-def set_process_values(request: ProcessRequest):
-
-    with plant_lock:
-
-        state = plant.set_process_values(
-            temperature=request.temperature,
-            pressure=request.pressure,
-            motor_speed=request.motor_speed,
-            valve_position=request.valve_position,
-        )
-
-        return {
-            "success": True,
-            "state": state,
-        }
-
-
-# ============================================================
-# HMI SETPOINT
-# ============================================================
-
-@app.post("/api/hmi/setpoint")
-def set_hmi_setpoint(request: SetpointRequest):
-
-    with plant_lock:
-
-        try:
-
-            state = plant.set_hmi_setpoint(
-                variable=request.variable,
-                value=request.value,
-            )
-
-            return {
-                "success": True,
-                "state": state,
-            }
-
-        except ValueError as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=500,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# PLC REGISTER WRITE
-# ============================================================
-
-@app.post("/api/plc/register")
-def write_plc_register(request: RegisterWriteRequest):
-
-    with plant_lock:
-
-        try:
-
-            plant.write_plc_register(
-                register=request.register,
-                value=request.value,
-            )
-
-            return {
-                "success": True,
-                "register": request.register,
-                "value": request.value,
-                "state": plant.get_state(),
-            }
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# PLC STATE
-# ============================================================
-
+    return plant.get_alarms()
+@app.post("/api/alarms/acknowledge")
+def acknowledge_alarm(request: AlarmActionRequest):
+    try:
+        return plant.acknowledge_alarm(request.alarm_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+@app.post("/api/alarms/reset")
+def reset_alarm(request: AlarmActionRequest):
+    try:
+        return plant.reset_alarm(request.alarm_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+@app.post("/api/plant/motor")
+def change_motor(speed: float):
+    plant.change_motor_speed(speed)
+    return plant.get_state()
+@app.post("/api/plant/valve")
+def change_valve(position: float):
+    plant.change_valve_position(position)
+    return plant.get_state()
+@app.post("/api/plant/stop")
+def stop_production():
+    plant.stop_production()
+    return plant.get_state()
+@app.post("/api/plant/resume")
+def resume_production():
+    plant.resume_production()
+    return plant.get_state()
 @app.post("/api/plc/run")
 def run_plc():
-
-    with plant_lock:
-
-        plant.run_plc()
-
-        return {
-            "success": True,
-            "plc": plant.plc.get_state(),
-        }
-
-
+    plant.run_plc()
+    return plant.get_state()
 @app.post("/api/plc/stop")
 def stop_plc():
-
-    with plant_lock:
-
-        plant.stop_plc()
-
-        return {
-            "success": True,
-            "plc": plant.plc.get_state(),
-        }
-
-
-# ============================================================
-# PRODUCTION
-# ============================================================
-
-@app.post("/api/production/start")
-def resume_production():
-
-    with plant_lock:
-
-        plant.resume_production()
-
-        return {
-            "success": True,
-            "state": plant.get_state(),
-        }
-
-
-@app.post("/api/production/stop")
-def stop_production():
-
-    with plant_lock:
-
-        plant.stop_production()
-
-        return {
-            "success": True,
-            "state": plant.get_state(),
-        }
-
-
-# ============================================================
-# PLC PROGRAM
-# ============================================================
-
+    plant.stop_plc()
+    return plant.get_state()
+@app.post("/api/plc/reset")
+def reset_plc():
+    plant.plc_runtime.reset()
+    plant.alarm_manager.reset_all()
+    plant.plc.run()
+    plant.process.resume()
+    plant.add_event(
+        "PLC_RESET", "INFO", "PLC-001", "PLC reset executed"
+    )
+    return plant.get_state()
 @app.get("/api/plc/program")
 def get_plc_program():
-
-    with plant_lock:
-
-        return plant.get_plc_program()
-
-
-# ============================================================
-# VALIDATE PLC PROGRAM
-# ============================================================
-
+    return plant.get_plc_program()
 @app.post("/api/plc/program/validate")
 def validate_plc_program(request: PLCProgramRequest):
-
-    with plant_lock:
-
-        try:
-
-            errors = plant.validate_plc_program(
-                request.source
-            )
-
-            return {
-                "valid": len(errors) == 0,
+    errors = plant.validate_plc_program(request.source)
+    return {"valid": len(errors) == 0, "errors": errors}
+@app.post("/api/plc/program/download")
+def download_plc_program(request: PLCProgramRequest):
+    errors = plant.load_plc_program(request.source)
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "PLC program validation failed",
                 "errors": errors,
-            }
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# LOAD PLC PROGRAM
-# ============================================================
-
-@app.post("/api/plc/program/load")
-def load_plc_program(request: PLCProgramRequest):
-
-    with plant_lock:
-
-        errors = plant.load_plc_program(
-            request.source
+            },
         )
-
-        if errors:
-
-            return {
-                "success": False,
-                "loaded": False,
-                "errors": errors,
-                "program": plant.get_plc_program(),
-            }
-
-        return {
-            "success": True,
-            "loaded": True,
-            "errors": [],
-            "program": plant.get_plc_program(),
-        }
-
-
-# ============================================================
-# RUN PLC PROGRAM
-# ============================================================
-
+    return plant.get_plc_program()
 @app.post("/api/plc/program/run")
 def run_plc_program():
-
-    with plant_lock:
-
-        try:
-
-            program = plant.run_plc_program()
-
-            return {
-                "success": True,
-                "program": program,
-                "state": plant.get_state(),
-            }
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# STOP PLC PROGRAM
-# ============================================================
-
+    try:
+        return plant.run_plc_program()
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error))
 @app.post("/api/plc/program/stop")
 def stop_plc_program():
-
-    with plant_lock:
-
-        try:
-
-            program = plant.stop_plc_program()
-
-            return {
-                "success": True,
-                "program": program,
-                "state": plant.get_state(),
-            }
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# RESET PLC PROGRAM
-# ============================================================
-
+    return plant.stop_plc_program()
 @app.post("/api/plc/program/reset")
 def reset_plc_program():
-
-    with plant_lock:
-
-        try:
-
-            program = plant.reset_plc_program()
-
-            return {
-                "success": True,
-                "program": program,
-                "state": plant.get_state(),
-            }
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# EQUIPMENT STATUS
-# ============================================================
-
-@app.post("/api/equipment/{asset_id}/status")
-def set_equipment_status(
-    asset_id: str,
-    request: EquipmentStatusRequest,
-):
-
-    with plant_lock:
-
-        try:
-
-            plant.set_equipment_status(
-                asset_id=asset_id,
-                status=request.status,
-            )
-
-            return {
-                "success": True,
-                "equipment": plant.get_equipment(
-                    asset_id
-                ).get_info(),
-            }
-
-        except ValueError as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# ATTACK ENGINE
-# ============================================================
-
-@app.get("/api/attacks")
-def get_attacks():
-
-    from simulation.attack_engine import SCENARIOS
-
-    return {
-        "attacks": SCENARIOS,
-    }
-
-
-@app.post("/api/attack")
+    return plant.reset_plc_program()
+# =====================================================================
+# HMI SETPOINTS
+# El operador introduce valores desde el panel KP400.
+# El sistema verifica umbrales ISA-18.2 (LL/L/H/HH) automáticamente.
+# =====================================================================
+@app.post("/api/hmi/setpoint")
+def hmi_setpoint(request: SetpointRequest):
+    """
+    Aplica el setpoint de una variable de proceso introducido desde el HMI.
+    Equivale en la vida real a: operador toca la pantalla, escribe el valor,
+    el PLC lo recibe en su DB y el alarm manager verifica los umbrales.
+    """
+    try:
+        return plant.set_hmi_setpoint(request.variable, request.value)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+# =====================================================================
+# ATTACK ENGINE ENDPOINTS
+# =====================================================================
+@app.get("/api/attack/scenarios")
+def get_attack_scenarios():
+    """Lista todos los escenarios de ataque disponibles."""
+    return SCENARIOS
+@app.post("/api/attack/execute")
 def execute_attack(request: AttackRequest):
-
-    with plant_lock:
-
-        try:
-
-            result = plant.execute_attack(
-                request.attack_type
-            )
-
-            return {
-                "success": True,
-                **result,
-            }
-
-        except ValueError as exc:
-
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            )
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=500,
-                detail=str(exc),
-            )
-
-
-# ============================================================
-# RESTORE PLANT
-# ============================================================
-
-@app.post("/api/restore")
+    """
+    Ejecuta un escenario de ataque educativo sobre la simulación.
+    Devuelve la salida de terminal y el nuevo estado de la planta.
+    """
+    try:
+        return plant.execute_attack(request.attack_type)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+@app.post("/api/plant/restore")
 def restore_plant():
-
-    with plant_lock:
-
-        state = plant.restore_plant()
-
-        return {
-            "success": True,
-            "message": "Plant restored successfully",
-            "state": state,
-        }
-
-
-# ============================================================
-# MANUAL SIMULATION TICK
-# ============================================================
-
-@app.post("/api/simulation/tick")
-def simulation_tick():
-
-    with plant_lock:
-
-        try:
-
+    """Restaura la planta a estado operativo normal tras un escenario de ataque."""
+    return plant.restore_plant()
+@app.post("/api/process/normalize")
+def normalize_process():
+    """
+    Restablece los valores del proceso (T, P, motor, válvula) al rango operativo normal.
+    Solo toca los valores de proceso — no afecta alarmas ni estado de equipos.
+    Útil durante la recuperación paso a paso después de un ataque.
+    """
+    from simulation.equipment import EquipmentStatus
+    plant.process.temperature      = 68.0
+    plant.process.pressure         = 3.8
+    plant.process.motor_speed      = 1450.0
+    plant.process.valve_position   = 50.0
+    plant.process.production_running = True
+    plant.process.production_rate  = 100.0
+    plant.process.process_alarm    = False
+    plant.plc.write_register("temperature",    68.0)
+    plant.plc.write_register("pressure",       3.8)
+    plant.plc.write_register("motor_speed",    1450.0)
+    plant.plc.write_register("valve_position", 50.0)
+    plant.add_event(
+        "PROCESS_NORMALIZED", "INFO", "OT-CYBER-RANGE",
+        "Valores de proceso restaurados a rango operativo normal "
+        "(T=68°C, P=3.8bar, Motor=1450RPM, Válvula=50%)",
+    )
+    return plant.get_state()
+@app.post("/api/equipment/restore")
+def restore_equipment():
+    """
+    Restablece el estado de todos los activos OT a ONLINE.
+    Solo toca el estado de los equipos — no afecta proceso ni alarmas.
+    """
+    from simulation.equipment import EquipmentStatus
+    for eq in plant.equipment:
+        eq.set_status(EquipmentStatus.ONLINE)
+    plant.add_event(
+        "EQUIPMENT_RESTORED", "INFO", "OT-CYBER-RANGE",
+        "Estado de todos los activos OT restaurado a ONLINE",
+    )
+    return plant.get_state()
+@app.post("/api/plc/program/load-safe")
+def load_safe_program():
+    """
+    Carga el programa PLC seguro desde backup durante recuperación de incidente.
+    Equivale a: TIA Portal → Download to Device → desde copia de seguridad verificada.
+    """
+    from simulation.plant import LEGITIMATE_PROGRAM
+    errors = plant.load_plc_program(LEGITIMATE_PROGRAM)
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+    # Limpiar el estado COMPROMISED del PLC y restablecer equipos de campo
+    from simulation.equipment import EquipmentStatus
+    plc_eq = plant.get_equipment("PLC-001")
+    if plc_eq:
+        plc_eq.set_status(EquipmentStatus.ONLINE)
+    for asset_id in ["M-001", "V-001"]:
+        eq = plant.get_equipment(asset_id)
+        if eq and eq.status in (
+            EquipmentStatus.COMPROMISED, EquipmentStatus.OFFLINE
+        ):
+            eq.set_status(EquipmentStatus.ONLINE)
+    plant.add_event(
+        "SAFE_PROGRAM_RESTORED", "INFO", "PLC-001",
+        "Programa PLC seguro restaurado desde backup — recuperación de incidente"
+    )
+    return plant.get_plc_program()
+# =====================================================================
+@app.websocket("/ws/plant")
+async def plant_websocket(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
             plant.update()
-
-            return {
-                "success": True,
-                "state": plant.get_state(),
-            }
-
-        except Exception as exc:
-
-            raise HTTPException(
-                status_code=500,
-                detail=str(exc),
+            await websocket.send_json(
+                plant.get_state()
             )
+            await asyncio.sleep(1)
+    except Exception as error:
+        print(
+            "WEBSOCKET ERROR:",
+            repr(error)
+        )
