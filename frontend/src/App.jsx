@@ -22,7 +22,10 @@ import {
 
 import "./App.css";
 
-import PhysicalPlant    from "./components/PhysicalPlant";
+import ExcelImporter from "./components/ExcelImporter";
+import DynamicPlant  from "./components/DynamicPlant";
+import DynamicPlant from "./components/DynamicPlant";
+//import PhysicalPlant    from "./components/PhysicalPlant";
 import PurduePage       from "./components/PurduePage";
 import SIEMPage         from "./components/SIEMPage";
 import AttackerConsole  from "./components/AttackerConsole";
@@ -298,6 +301,8 @@ function App() {
   const [plant, setPlant] = useState(null);
   const [activePage, setActivePage] = useState("plant");
   const [connected, setConnected] = useState(false);
+  const [labData,        setLabData]        = useState(null);
+  const [showImporter,   setShowImporter]   = useState(false);
 
   const [alarms, setAlarms] =
   useState([]);
@@ -747,25 +752,24 @@ function App() {
         =================================================== */}
 
 
-        {activePage === "plant" && (
+{activePage === "plant" && (
+  <DynamicPlant
+    labData          = {labData}
+    events           = {events}
+    alarms           = {plant?.alarms?.active ?? []}
+    onImportRequest  = {() => setShowImporter(true)}
+  />
+)}
 
-          <PlantPage
-            plant={plant}
-            process={process}
-            plc={plc}
-            events={events}
-            equipment={equipment}
-          />
-
-        )}
-
-
-        {activePage === "inventory" && (
-
-          <InventoryPage />
-
-        )}
-
+{showImporter && (
+  <ExcelImporter
+    onImport = {(data) => { setLabData(data); setShowImporter(false); }}
+    onClose  = {() => setShowImporter(false)}
+  />
+)}
+<button onClick={() => setShowImporter(true)}>
+  📂 Importar Excel
+</button>
 
 {activePage === "purdue" && (
 
@@ -1033,11 +1037,12 @@ function PlantPage({
           PHYSICAL PLANT
       ===================================================== */}
 
-      <PhysicalPlant
-       plant={plant}
-       equipment={equipment}
-       events={events}
-       />
+<DynamicPlant
+    assets      = {tu_array_de_activos}   // ← de tu Excel (próxima fase)
+    connections = {tu_array_conexiones}   // ← de tu Excel (próxima fase)
+    events      = {events}
+    alarms      = {plant?.alarms?.active ?? []}
+  />
 
 
       {/* =====================================================
