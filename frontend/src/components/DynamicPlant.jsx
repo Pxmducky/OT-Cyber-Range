@@ -264,191 +264,173 @@ function EquipmentCard({ asset, size = 72, onClick, selected = false }) {
 /* ────────────────────────────────────────────────────────────────────────────
    LINE DETAIL VIEW — vista expandida de una línea de producción
 ──────────────────────────────────────────────────────────────────────────── */
-function LineDetailView({ lineKey, assets, connections, onBack, onAssetClick, selectedId }) {
-  const meta = LINE_META[lineKey] ?? { label: lineKey, color: "#4b5563", icon: "⚙", bg: "transparent" };
+/* ────────────────────────────────────────────────────────────────────────────
+   EQUIPMENT PHOTO — imagen real del equipo (con fallback al SVG)
+   Fuentes: Wikimedia Commons CC-0 / CC-BY / fabricante (uso educativo)
+──────────────────────────────────────────────────────────────────────────── */
 
-  // Agrupar por nivel Purdue (de arriba=L3 a abajo=L0)
-  const levels = [
-    { level: "3",   assets: assets.filter(a => a.purdueLevel === "3") },
-    { level: "2",   assets: assets.filter(a => a.purdueLevel === "2") },
-    { level: "1",   assets: assets.filter(a => a.purdueLevel === "1") },
-    { level: "0-1", assets: assets.filter(a => ["0","0-1"].includes(a.purdueLevel)) },
-  ].filter(l => l.assets.length > 0);
+/** Mapeo tipo → URL de imagen pública (CC-licensed o dominio público) */
+const PHOTO_MAP = {
+  /* PLCs */
+  "plc-siemens":         "/equipment/plc-siemens.jpg",
+  "plc-rockwell":        "/equipment/plc-siemens.jpg",
+  "plc":                 "/equipment/plc-siemens.jpg",
 
-  // Conexiones dentro de esta línea
-  const lineIds = new Set(assets.map(a => a.id));
-  const lineConns = connections.filter(
-    c => lineIds.has(c.sourceId) || lineIds.has(c.targetId)
+  /* HMI */
+  "hmi-siemens":         "/equipment/hmi-siemens.jpg",
+  "hmi-rockwell":        "/equipment/hmi-siemens.jpg",
+  "hmi":                 "/equipment/hmi-siemens.jpg",
+
+  /* SCADA / Servers */
+  "scada":               "/equipment/engineering-station.jpg",
+  "mes":                 "/equipment/engineering-station.jpg",
+  "historian":           "/equipment/engineering-station.jpg",
+
+  /* Engineering Station */
+  "engineering station": "/equipment/engineering-station.jpg",
+  "workstation":         "/equipment/engineering-station.jpg",
+
+  /* eWON gateway */
+  "ewon":                "/equipment/ewon-hms.jpg",
+  "ewon-hms":            "/equipment/ewon-hms.jpg",
+  "gateway":             "/equipment/ewon-hms.jpg",
+
+  /* Switches */
+  "switch-siemens":      "/equipment/switch-siemens.jpg",
+  "switch-hirschmann":   "/equipment/switch-siemens.jpg",
+  "switch-cisco":        "/equipment/switch-siemens.jpg",
+  "switch":              "/equipment/switch-siemens.jpg",
+
+  /* Sensors */
+  "sensor":              "/equipment/sensor.jpg",
+
+  /* Valves */
+  "valve":               "/equipment/valve.jpg",
+
+  /* Motors / Drives */
+  "motor":               "/equipment/motor.jpg",
+  "drive":               "/equipment/motor.jpg",
+  "conveyor":            "/equipment/motor.jpg",
+
+  /* Firewall / Security */
+  "firewall":            "/equipment/firewall.jpg",
+  "mguard":              "/equipment/firewall.jpg",
+  "security":            "/equipment/firewall.jpg",
+};
+
+function getPhotoUrl(asset) {
+  const type   = (asset.type   || "").toLowerCase().trim();
+  const vendor = (asset.vendor || "").toLowerCase().split(" ")[0];
+  return (
+    PHOTO_MAP[`${type}-${vendor}`] ??
+    PHOTO_MAP[type]                ??
+    null
   );
+}
+
+/** Tarjeta de equipo con foto real + estado + click */
+function EquipmentPhotoCard({ asset, selected, onClick, compact = false }) {
+  const [imgErr, setImgErr] = useState(false);
+  const photoUrl = getPhotoUrl(asset);
+  const st       = statusColor(asset.status);
+  const pu       = PURDUE[asset.purdueLevel] ?? PURDUE["1"];
+  const cardW    = compact ? 86 : 106;
+  const imgH     = compact ? 56 : 70;
 
   return (
-    <div style={{ width: "100%", height: "100%" }}>
-      {/* Header */}
+    <div
+      onClick={e => { e.stopPropagation(); onClick?.(asset); }}
+      title={`${asset.id} — ${asset.name}\n${asset.ip}`}
+      style={{
+        width:         cardW,
+        borderRadius:  8,
+        border:        `1.5px solid ${selected ? st : "#1e293b"}`,
+        background:    selected ? `${st}12` : "#080e18",
+        cursor:        "pointer",
+        overflow:      "hidden",
+        flexShrink:    0,
+        boxShadow:     selected ? `0 0 14px ${st}44` : "0 2px 8px rgba(0,0,0,.4)",
+        transition:    "all .18s",
+        position:      "relative",
+      }}
+    >
+      {/* Banda superior de Purdue */}
+      <div style={{ height: 3, background: pu.color }}/>
+
+      {/* Status LED */}
       <div style={{
-        display:        "flex",
-        alignItems:     "center",
-        gap:            14,
-        padding:        "14px 24px",
-        borderBottom:   `1px solid ${meta.color}22`,
-        background:     meta.bg,
-        marginBottom:   16,
-      }}>
-        <button
-          onClick={onBack}
-          style={{
-            background: "none",
-            border:     `1px solid ${meta.color}44`,
-            color:      meta.color,
-            padding:    "6px 14px",
-            borderRadius: 6,
-            cursor:     "pointer",
-            fontFamily: "monospace",
-            fontSize:   11,
-          }}
-        >
-          ← VOLVER
-        </button>
-        <span style={{ fontSize: 22 }}>{meta.icon}</span>
-        <div>
-          <div style={{ color: meta.color, fontFamily: "monospace", fontWeight: 700, fontSize: 15, letterSpacing: ".06em" }}>
-            {meta.label}
+        position:     "absolute",
+        top:          7,
+        right:        7,
+        width:        7,
+        height:       7,
+        borderRadius: "50%",
+        background:   st,
+        boxShadow:    `0 0 5px ${st}`,
+        zIndex:       2,
+      }}/>
+
+      {/* Foto del equipo */}
+      <div style={{ position: "relative", height: imgH, background: "#040a12", overflow: "hidden" }}>
+        {photoUrl && !imgErr ? (
+          <img
+            src={photoUrl}
+            alt={asset.type}
+            style={{
+              width:      "100%",
+              height:     "100%",
+              objectFit:  "cover",
+              objectPosition: "center",
+              display:    "block",
+              filter:     "brightness(0.88) contrast(1.1)",
+            }}
+            onError={() => setImgErr(true)}
+          />
+        ) : (
+          /* Fallback: SVG icon centrado */
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+            <EquipmentIcon asset={asset} size={compact ? 46 : 58}/>
           </div>
-          <div style={{ color: "#4b5563", fontSize: 10, fontFamily: "monospace" }}>
-            {assets.length} activos · {lineConns.length} conexiones
-          </div>
-        </div>
-        {/* Leyenda de protocolos */}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {[...new Set(lineConns.map(c => c.Protocol.split(",")[0]))].map(p => (
-            <span key={p} style={{
-              background: protoColor(p) + "18",
-              border:     `1px solid ${protoColor(p)}44`,
-              color:      protoColor(p),
-              padding:    "2px 8px",
-              borderRadius: 4,
-              fontSize:   9,
-              fontFamily: "monospace",
-            }}>{p}</span>
-          ))}
-        </div>
+        )}
+        {/* Overlay degradado inferior */}
+        <div style={{
+          position:   "absolute",
+          bottom:     0,
+          left:       0,
+          right:      0,
+          height:     28,
+          background: "linear-gradient(transparent, rgba(4,10,18,.9))",
+        }}/>
       </div>
 
-      {/* Contenido scrollable */}
-      <div style={{ overflowY: "auto", height: "calc(100% - 80px)", padding: "0 24px 24px" }}>
-
-        {/* Por cada nivel Purdue (de SCADA arriba a campo abajo) */}
-        {levels.map(({ level, assets: levelAssets }) => {
-          const pu = PURDUE[level] ?? PURDUE["1"];
-          return (
-            <div key={level} style={{ marginBottom: 24 }}>
-              {/* Nivel label */}
-              <div style={{
-                display:      "flex",
-                alignItems:   "center",
-                gap:          10,
-                marginBottom: 12,
-              }}>
-                <div style={{
-                  width:        6,
-                  alignSelf:    "stretch",
-                  borderRadius: 3,
-                  background:   pu.color,
-                }}/>
-                <div>
-                  <div style={{ color: pu.color, fontSize: 11, fontFamily: "monospace", fontWeight: 700, letterSpacing: ".08em" }}>
-                    {pu.label}
-                  </div>
-                  <div style={{ color: "#334155", fontSize: 9, fontFamily: "monospace" }}>
-                    {levelAssets.length} equipo{levelAssets.length > 1 ? "s" : ""}
-                  </div>
-                </div>
-                <div style={{ flex: 1, height: 1, background: pu.color + "22" }}/>
-              </div>
-
-              {/* Equipos en este nivel */}
-              <div style={{
-                display:       "flex",
-                flexWrap:      "wrap",
-                gap:           14,
-                paddingLeft:   14,
-              }}>
-                {levelAssets.map(asset => {
-                  // Buscar conexiones hacia/desde este asset en esta línea
-                  const myConns = lineConns.filter(
-                    c => c.sourceId === asset.id || c.targetId === asset.id
-                  );
-
-                  return (
-                    <div key={asset.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                      <EquipmentCard
-                        asset={asset}
-                        size={76}
-                        selected={selectedId === asset.id}
-                        onClick={onAssetClick}
-                      />
-                      {/* Etiquetas de conexión */}
-                      {myConns.length > 0 && (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, justifyContent: "center", maxWidth: 108 }}>
-                          {myConns.slice(0, 3).map((conn, i) => {
-                            const proto = conn.Protocol.split(",")[0];
-                            const peer  = conn.Source_ID === asset.id ? conn.Target_ID : conn.Source_ID;
-                            return (
-                              <span key={i} style={{
-                                fontSize:   7,
-                                fontFamily: "monospace",
-                                color:      protoColor(proto),
-                                background: protoColor(proto) + "12",
-                                border:     `1px solid ${protoColor(proto)}30`,
-                                padding:    "1px 5px",
-                                borderRadius: 3,
-                              }}>
-                                {conn.Direction === "inbound" ? "←" : conn.Direction === "outbound" ? "→" : "↔"} {peer}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-
-        {/* Mapa de conexiones — línea visual */}
-        {lineConns.length > 0 && (
-          <div style={{
-            marginTop:    24,
-            padding:      16,
-            background:   "rgba(255,255,255,.02)",
-            border:       "1px solid #1e293b",
-            borderRadius: 8,
-          }}>
-            <div style={{ fontSize: 9, fontFamily: "monospace", color: "#334155", marginBottom: 12, letterSpacing: ".1em" }}>
-              MAPA DE CONEXIONES
-            </div>
-            {lineConns.map((conn, i) => {
-              const pc = protoColor(conn.Protocol.split(",")[0]);
-              const arrow = conn.Direction === "inbound" ? "←" : conn.Direction === "outbound" ? "→" : "↔";
-              return (
-                <div key={i} style={{
-                  display:     "flex",
-                  alignItems:  "center",
-                  gap:         8,
-                  padding:     "5px 0",
-                  borderBottom: i < lineConns.length - 1 ? "1px solid #0d1520" : "none",
-                  fontSize:    9,
-                  fontFamily:  "monospace",
-                }}>
-                  <span style={{ color: "#4b5563", minWidth: 80 }}>{conn.Source_ID}</span>
-                  <span style={{ color: pc, flex: 1, textAlign: "center" }}>
-                    ─ {conn.Protocol.split(",")[0]} {arrow} ─
-                  </span>
-                  <span style={{ color: "#4b5563", minWidth: 80, textAlign: "right" }}>{conn.Target_ID}</span>
-                </div>
-              );
-            })}
+      {/* Info inferior */}
+      <div style={{ padding: "5px 6px 6px" }}>
+        <div style={{
+          fontSize:      9,
+          fontFamily:    "monospace",
+          fontWeight:    700,
+          color:         st,
+          letterSpacing: ".04em",
+          lineHeight:    1.2,
+          whiteSpace:    "nowrap",
+          overflow:      "hidden",
+          textOverflow:  "ellipsis",
+        }}>
+          {asset.id}
+        </div>
+        <div style={{
+          fontSize:      8,
+          color:         "#475569",
+          whiteSpace:    "nowrap",
+          overflow:      "hidden",
+          textOverflow:  "ellipsis",
+          marginTop:     1,
+        }}>
+          {asset.type}
+        </div>
+        {!compact && (
+          <div style={{ fontSize: 7, color: "#1e3a5f", fontFamily: "monospace", marginTop: 2 }}>
+            {asset.ip}
           </div>
         )}
       </div>
@@ -457,10 +439,264 @@ function LineDetailView({ lineKey, assets, connections, onBack, onAssetClick, se
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
+   TOPOLOGY VIEW — layout SVG con líneas animadas de conexión
+   Equipos posicionados por nivel Purdue, líneas entre ellos del Excel
+──────────────────────────────────────────────────────────────────────────── */
+function TopologyView({ assets, connections, selectedId, onAssetClick, lineColor }) {
+  // Niveles de Purdue de arriba (mayor) a abajo (menor)
+  const LEVEL_ORDER = ["3.5", "3", "2", "1", "0"];
+  const CARD_W  = 106;
+  const CARD_H  = 122;   // aprox height of EquipmentPhotoCard
+  const GAP_X   = 20;
+  const PAD_X   = 32;
+  const PAD_Y   = 24;
+
+  // Agrupar por nivel
+  const byLevel = {};
+  assets.forEach(a => {
+    const l = a.purdueLevel || "1";
+    if (!byLevel[l]) byLevel[l] = [];
+    byLevel[l].push(a);
+  });
+  const activeLevels = LEVEL_ORDER.filter(l => byLevel[l]?.length);
+
+  // Calcular ancho total necesario
+  const maxPerLevel = Math.max(...activeLevels.map(l => byLevel[l].length));
+  const svgW = Math.max(700, PAD_X * 2 + maxPerLevel * (CARD_W + GAP_X) - GAP_X);
+  const svgH = PAD_Y * 2 + activeLevels.length * (CARD_H + 60) - 60;
+
+  // Posiciones de cada equipo { id → { cx, cy } } (centro de la card)
+  const pos = {};
+  activeLevels.forEach((level, li) => {
+    const row    = byLevel[level];
+    const rowW   = row.length * (CARD_W + GAP_X) - GAP_X;
+    const startX = (svgW - rowW) / 2;
+    const y      = PAD_Y + li * (CARD_H + 60);
+    row.forEach((a, ai) => {
+      pos[a.id] = {
+        cx: startX + ai * (CARD_W + GAP_X) + CARD_W / 2,
+        cy: y + CARD_H / 2,
+        x:  startX + ai * (CARD_W + GAP_X),
+        y,
+      };
+    });
+  });
+
+  // Filtrar conexiones que tienen ambos extremos en esta vista
+  const assetIds = new Set(assets.map(a => a.id));
+  const visibleConns = connections.filter(
+    c => assetIds.has(c.sourceId) && assetIds.has(c.targetId)
+  );
+
+  return (
+    <div style={{ position: "relative", overflowX: "auto", overflowY: "auto" }}>
+      {/* ── SVG de conexiones (debajo de los equipos) ── */}
+      <svg
+        viewBox={`0 0 ${svgW} ${svgH}`}
+        style={{
+          width:    svgW,
+          height:   svgH,
+          position: "absolute",
+          top:      0, left: 0,
+          pointerEvents: "none",
+        }}
+      >
+        <defs>
+          {/* Gradiente radial para "brillo" de fondo */}
+          <radialGradient id="bg-glow" cx="50%" cy="50%">
+            <stop offset="0%"   stopColor={lineColor} stopOpacity="0.06"/>
+            <stop offset="100%" stopColor={lineColor} stopOpacity="0"/>
+          </radialGradient>
+          {/* Flecha */}
+          {["green","blue","amber","red","cyan","purple","gray"].map((n,i) => {
+            const c = ["#22c55e","#818cf8","#f59e0b","#ef4444","#22d3ee","#a78bfa","#4b5563"][i];
+            return (
+              <marker key={n} id={`arrow-${n}`} markerWidth={6} markerHeight={6} refX={5} refY={3} orient="auto">
+                <path d="M0,0 L6,3 L0,6 Z" fill={c} opacity={0.8}/>
+              </marker>
+            );
+          })}
+        </defs>
+
+        {/* Fondo con brillo sutil centrado */}
+        <ellipse cx={svgW/2} cy={svgH/2} rx={svgW*0.6} ry={svgH*0.5} fill="url(#bg-glow)"/>
+
+        {/* Separadores de nivel */}
+        {activeLevels.map((level, li) => {
+          const pu = PURDUE[level] ?? PURDUE["1"];
+          const y  = PAD_Y + li * (CARD_H + 60);
+          return (
+            <g key={level}>
+              {/* Línea de banda */}
+              <line x1={0} y1={y - 8} x2={svgW} y2={y - 8}
+                stroke={pu.color} strokeWidth={0.5} strokeDasharray="4 8" opacity={0.3}/>
+              {/* Label del nivel */}
+              <text x={8} y={y + 12} fontSize={9} fill={pu.color} fontFamily="monospace"
+                fontWeight="bold" opacity={0.7}>
+                L{level}
+              </text>
+              <text x={8} y={y + 22} fontSize={7} fill={pu.color} fontFamily="monospace"
+                opacity={0.5}>
+                {pu.label}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Líneas de conexión animadas */}
+        {visibleConns.map((conn, i) => {
+          const from = pos[conn.sourceId];
+          const to   = pos[conn.targetId];
+          if (!from || !to) return null;
+
+          const proto = (conn.protocol || "").split(",")[0];
+          const color = protoColor(proto);
+          const dir   = conn.direction ?? "bidirectional";
+
+          // Path bezier curvo entre los centros de las cards
+          const dx = to.cx - from.cx;
+          const dy = to.cy - from.cy;
+          const ctrl1x = from.cx + dx * 0.1;
+          const ctrl1y = from.cy + dy * 0.5;
+          const ctrl2x = to.cx   - dx * 0.1;
+          const ctrl2y = to.cy   - dy * 0.5;
+          const d = `M${from.cx},${from.cy} C${ctrl1x},${ctrl1y} ${ctrl2x},${ctrl2y} ${to.cx},${to.cy}`;
+
+          // Punto medio para el label
+          const midX = (from.cx + to.cx) / 2;
+          const midY = (from.cy + to.cy) / 2 - 8;
+
+          return (
+            <g key={i}>
+              {/* Track (glow difuso) */}
+              <path d={d} fill="none" stroke={color} strokeWidth={4} opacity={0.08}/>
+              {/* Línea animada */}
+              <path d={d} fill="none" stroke={color} strokeWidth={1.8}
+                strokeDasharray="10 5" opacity={0.75}>
+                <animate attributeName="stroke-dashoffset"
+                  from={dir === "inbound" ? 0 : 30}
+                  to={dir === "inbound" ? 30 : 0}
+                  dur="1.4s" repeatCount="indefinite"/>
+              </path>
+              {/* Label del protocolo */}
+              <rect x={midX - 20} y={midY - 7} width={40} height={12}
+                rx={3} fill="#04080f" opacity={0.85}/>
+              <text x={midX} y={midY + 2} textAnchor="middle" fontSize={7}
+                fill={color} fontFamily="monospace" opacity={0.9}>
+                {proto}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* ── Equipment cards (HTML encima del SVG) ── */}
+      <div style={{ position: "relative", width: svgW, height: svgH }}>
+        {assets.map(asset => {
+          const p = pos[asset.id];
+          if (!p) return null;
+          return (
+            <div
+              key={asset.id}
+              style={{
+                position:  "absolute",
+                left:      p.x,
+                top:       p.y,
+                width:     CARD_W,
+                zIndex:    10,
+              }}
+            >
+              <EquipmentPhotoCard
+                asset    = {asset}
+                selected = {selectedId === asset.id}
+                onClick  = {onAssetClick}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   LINE DETAIL VIEW — header + TopologyView
+──────────────────────────────────────────────────────────────────────────── */
+function LineDetailView({ lineKey, assets, connections, lineMeta, onBack, onAssetClick, selectedId }) {
+  const meta = lineMeta?.[lineKey] ?? LINE_META[lineKey] ?? { label: lineKey, color: "#4b5563", icon: "⚙", bg: "transparent" };
+
+  // Conexiones de esta línea (incluye las que tocan activos de otras líneas — infra compartida)
+  const assetIds  = new Set(assets.map(a => a.id));
+  const lineConns = connections.filter(
+    c => assetIds.has(c.sourceId) || assetIds.has(c.targetId)
+  );
+
+  // Protocolos únicos
+  const protocols = [...new Set(lineConns.map(c => (c.protocol || "").split(",")[0]).filter(Boolean))];
+
+  return (
+    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+
+      {/* ── Header ── */}
+      <div style={{
+        display:        "flex",
+        alignItems:     "center",
+        gap:            14,
+        padding:        "12px 24px",
+        borderBottom:   `1px solid ${meta.color}22`,
+        background:     meta.bg,
+        flexShrink:     0,
+      }}>
+        <button onClick={onBack} style={{
+          background: "none", border: `1px solid ${meta.color}44`, color: meta.color,
+          padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontFamily: "monospace", fontSize: 10,
+        }}>
+          ← VOLVER
+        </button>
+        <span style={{ fontSize: 20 }}>{meta.icon}</span>
+        <div>
+          <div style={{ color: meta.color, fontFamily: "monospace", fontWeight: 700, fontSize: 14, letterSpacing: ".05em" }}>
+            {meta.label}
+          </div>
+          <div style={{ color: "#4b5563", fontSize: 9, fontFamily: "monospace" }}>
+            {assets.length} activos · {lineConns.length} conexiones
+          </div>
+        </div>
+        {/* Leyenda de protocolos */}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {protocols.map(p => (
+            <span key={p} style={{
+              background: protoColor(p) + "18", border: `1px solid ${protoColor(p)}44`,
+              color: protoColor(p), padding: "2px 8px", borderRadius: 4, fontSize: 8, fontFamily: "monospace",
+            }}>{p}</span>
+          ))}
+        </div>
+        {/* Hint */}
+        <div style={{ color: "#1e293b", fontSize: 8, fontFamily: "monospace", flexShrink: 0 }}>
+          clic en equipo → interfaz completa
+        </div>
+      </div>
+
+      {/* ── Topology (scrollable) ── */}
+      <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", padding: "16px 24px 24px" }}>
+        <TopologyView
+          assets      = {assets}
+          connections = {lineConns}
+          selectedId  = {selectedId}
+          onAssetClick= {onAssetClick}
+          lineColor   = {meta.color}
+        />
+      </div>
+    </div>
+  );
+}
+
+
+/* ────────────────────────────────────────────────────────────────────────────
    LINE OVERVIEW CARD — tarjeta resumen de una línea en la vista overview
 ──────────────────────────────────────────────────────────────────────────── */
-function LineOverviewCard({ lineKey, assets, onClick }) {
-  const meta  = LINE_META[lineKey] ?? { label: lineKey, color: "#4b5563", icon: "⚙", bg: "transparent" };
+function LineOverviewCard({ lineKey, assets, lineMeta, onClick }) {
+  const meta  = lineMeta?.[lineKey] ?? LINE_META[lineKey] ?? { label: lineKey, color: "#4b5563", icon: "⚙", bg: "transparent" };
   const warn  = assets.filter(a => ["WARNING","COMPROMISED","DAMAGED","OFFLINE"].includes(a.status?.toUpperCase())).length;
   const byPurdue = [3, 2, 1, 0].map(l =>
     assets.filter(a => parseInt(a.purdueLevel) === l)
@@ -531,11 +767,24 @@ function LineOverviewCard({ lineKey, assets, onClick }) {
           }}>
             L{group[0]?.purdueLevel}
           </div>
-          {group.slice(0, 5).map(a => (
-            <div key={a.id} title={`${a.id} — ${a.name}`}>
-              <EquipmentIcon asset={a} size={36}/>
-            </div>
-          ))}
+          {group.slice(0, 5).map(a => {
+              const photoUrl = getPhotoUrl(a);
+              const [imgErr, setImgErr] = useState(false);
+              return (
+                <div key={a.id} title={`${a.id} — ${a.name}`} style={{
+                  width: 36, height: 36, borderRadius: 4, overflow: "hidden",
+                  border: `1px solid #1e293b`, background: "#040a12",
+                }}>
+                  {photoUrl && !imgErr ? (
+                    <img src={photoUrl} alt={a.type}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      onError={() => setImgErr(true)}/>
+                  ) : (
+                    <EquipmentIcon asset={a} size={34}/>
+                  )}
+                </div>
+              );
+            })}
           {group.length > 5 && (
             <span style={{ color: "#334155", fontSize: 9, fontFamily: "monospace" }}>+{group.length - 5}</span>
           )}
