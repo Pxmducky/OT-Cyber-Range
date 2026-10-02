@@ -56,6 +56,7 @@ END_IF"""
 
 from simulation.plc import PLC
 from simulation.process import ProcessState
+from simulation.asset_models import AssetProcess
 from simulation.events import OTEvent
 from simulation.plc_program import PLCProgram
 from simulation.plc_runtime import PLCRuntime
@@ -246,6 +247,14 @@ class Plant:
             self.add_event
         )
 
+        # Mapa de actividad por activo (para colorear topología + SIEM).
+        # asset_id -> {"state","event","protocol","target","ttl"}
+        self.activity = {}
+
+        # Proceso individual por activo (poblado por load_topology desde Excel).
+        self.assets_runtime = {}   # asset_id -> AssetProcess
+        self.asset_conns    = []   # [{sourceId, targetId, protocol, port}]
+
         self.add_event(
             event_type="SYSTEM_START",
             severity="INFO",
@@ -375,6 +384,247 @@ class Plant:
                 valve.set_status(
                     EquipmentStatus.ONLINE
                 )
+
+        # Avanzar el proceso individual de cada activo.
+        import random as _rnd
+        _r = lambda a, b: _rnd.uniform(a, b)
+        for _ap in self.assets_runtime.values():
+            _ap.tick(_r)
+
+        # Desvanecer la actividad reciente de los activos.
+        self._decay_activity()
+
+    # =========================================================
+    # ACTIVITY BUS — acciones genéricas de cualquier equipo
+    # =========================================================
+
+    ACTIVITY_SEVERITY = {
+        "normal": "INFO", "command": "INFO", "config": "INFO",
+        "scan": "WARNING", "warning": "WARNING", "blocked": "HIGH",
+        "attack": "CRITICAL", "offline": "WARNING",
+    }
+
+    def _set_activity(self, asset_id, state, event_type, protocol=None, target=None, ttl=4):
+        if not asset_id:
+            return
+        self.activity[asset_id] = {
+            "state": state, "event": event_type,
+            "protocol": protocol, "target": target, "ttl": ttl,
+        }
+        if target:
+            self.activity[target] = {
+                "state": state, "event": event_type,
+                "protocol": protocol, "target": None, "ttl": ttl,
+            }
+
+    def _decay_activity(self):
+        for aid in list(self.activity):
+            self.activity[aid]["ttl"] -= 1
+            if self.activity[aid]["ttl"] <= 0:
+                del self.activity[aid]
+
+    def load_topology(self, assets=None, connections=None, variables=None):
+        """Construye un proceso por activo a partir del inventario del Excel."""
+        assets = assets or []
+        self.assets_runtime = {}
+        for a in assets:
+            aid = str(a.get("id", "")).strip()
+            if not aid:
+                continue
+            self.assets_runtime[aid] = AssetProcess(a, variables or [])
+        self.asset_conns = connections or []
+        self.add_event(
+            "TOPOLOGY_LOADED", "INFO", "OT-CYBER-RANGE",
+            f"Inventario cargado: {len(self.assets_runtime)} activos, "
+            f"{len(self.asset_conns)} conexiones",
+        )
+        return self.get_state()
+
+    def _neighbors(self, asset_id):
+        out = set()
+        for c in self.asset_conns:
+            if c.get("sourceId") == asset_id and c.get("targetId"):
+                out.add(c["targetId"])
+            elif c.get("targetId") == asset_id and c.get("sourceId"):
+                out.add(c["sourceId"])
+        return out
+
+    def _downstream(self, asset_id, max_depth=6):
+        """Activos alcanzables siguiendo las conexiones dirigidas source->target."""
+        seen, frontier = set(), [asset_id]
+        for _ in range(max_depth):
+            nxt = []
+            for a in frontier:
+                for c in self.asset_conns:
+                    if c.get("sourceId") == a and c.get("targetId") and c["targetId"] not in seen:
+                        seen.add(c["targetId"]); nxt.append(c["targetId"])
+            if not nxt:
+                break
+            frontier = nxt
+        return seen
+
+    _HEALTH_ORDER = {"normal": 0, "warning": 1, "critical": 2}
+
+    def _compute_health(self):
+        """Salud por activo + propagación aguas abajo (criticidad del proceso)."""
+        order = self._HEALTH_ORDER
+        health = {aid: ap.health() for aid, ap in self.assets_runtime.items()}
+
+        adj = {}
+        for c in self.asset_conns:
+            s_, t_ = c.get("sourceId"), c.get("targetId")
+            if s_ and t_:
+                adj.setdefault(s_, []).append(t_)
+
+        for _ in range(6):  # iterar hasta estabilizar
+            changed = False
+            for src, targets in adj.items():
+                sh = health.get(src, "normal")
+                if order.get(sh, 0) < 1:
+                    continue
+                src_ap = self.assets_runtime.get(src)
+                for t in targets:
+                    # la pérdida de control de un PLC crítico vuelve crítico al equipo
+                    if src_ap is not None and src_ap.category in ("plc", "scada") and sh == "critical":
+                        new = "critical"
+                    else:
+                        new = "warning"
+                    if order.get(new, 0) > order.get(health.get(t, "normal"), 0):
+                        health[t] = new
+                        changed = True
+            if not changed:
+                break
+        return health
+
+    def apply_equipment_action(
+        self, asset_id, asset_type="", action="", value=None,
+        target_id=None, protocol=None,
+    ):
+        """
+        Punto único de entrada para los botones de CUALQUIER equipo.
+        Genera un evento SIEM, marca actividad (para colorear) y aplica el
+        impacto real en el proceso cuando la lógica OT lo permite.
+        """
+        # --- Ruta por-activo: si el activo tiene proceso propio, lo mutamos ---
+        ap = self.assets_runtime.get(asset_id)
+        if ap is not None:
+            event_type, severity, message = ap.apply_action(action, value)
+            self._set_activity(asset_id, ap.activity, event_type, protocol, target_id)
+
+            # Cadena causal OT: si un PLC pasa a STOP, se detienen los
+            # equipos que controla aguas abajo (motores/bombas) y se abren
+            # sus válvulas a seguro no — se cierran según el proceso.
+            if ap.category == "plc" and ap.state.get("cpu_state") != "RUN":
+                for t in self._downstream(asset_id):
+                    tap = self.assets_runtime.get(t)
+                    if tap and tap.category in ("motor", "pump"):
+                        tap.state["running"] = False
+                        tap.state["speed" if tap.category == "motor" else "flow"] = 0.0
+                        self._set_activity(t, "warning", "PLC_STOP_CASCADE", ttl=4)
+                        self.add_event(
+                            "PLC_STOP_CASCADE", "HIGH", t,
+                            f"{t}: detenido por paro del controlador {asset_id}",
+                        )
+
+            # Propagación de actividad a vecinos ante paro/falla puntual.
+            if ap.activity == "warning":
+                for nb in self._neighbors(asset_id):
+                    nb_ap = self.assets_runtime.get(nb)
+                    if nb_ap and nb_ap.category in ("motor", "pump", "valve", "plc"):
+                        self._set_activity(nb, "warning", "DOWNSTREAM_IMPACT", ttl=3)
+
+            self.add_event(event_type, severity, asset_id, message)
+            return self.get_state()
+
+        t = (asset_type or "").upper()
+        a = (action or "").upper()
+        state = "command"          # color por defecto
+        event_type = "EQUIPMENT_ACTION"
+        message = f"{asset_id}: acción {action}"
+        severity = None
+
+        # ---- DRIVE / MOTOR ----
+        if "MOTOR" in t or "DRIVE" in t or "VFD" in t:
+            if a in ("START", "RUN", "MARCHA"):
+                self.process.resume()
+                self.change_motor_speed(1450.0)
+                event_type, message = "MOTOR_START", f"{asset_id}: motor en MARCHA (1450 RPM)"
+            elif a in ("STOP", "PARO", "PARAR"):
+                self.change_motor_speed(0.0)
+                state, event_type, message = "warning", "MOTOR_STOP", f"{asset_id}: motor en PARO"
+            elif a in ("SPEED", "SETPOINT") and value is not None:
+                self.change_motor_speed(float(value))
+                event_type, message = "MOTOR_SPEED", f"{asset_id}: velocidad -> {float(value):.0f} RPM"
+
+        # ---- VALVE ----
+        elif "VALVE" in t or "VALV" in t:
+            if a in ("OPEN", "ABRIR"):
+                self.change_valve_position(100.0)
+                event_type, message = "VALVE_OPEN", f"{asset_id}: válvula ABIERTA (100%)"
+            elif a in ("CLOSE", "CERRAR"):
+                self.change_valve_position(0.0)
+                state, event_type, message = "warning", "VALVE_CLOSE", f"{asset_id}: válvula CERRADA (0%)"
+            elif a in ("POSITION", "SETPOINT") and value is not None:
+                self.change_valve_position(float(value))
+                event_type, message = "VALVE_POSITION", f"{asset_id}: posición -> {float(value):.0f}%"
+
+        # ---- SENSOR ----
+        elif "SENSOR" in t or "TRANSMIT" in t or t in ("TT", "PT", "FT", "LT"):
+            if a in ("FORCE", "SET") and value is not None:
+                target_var = "pressure" if ("PRES" in t or "PT" in t) else "temperature"
+                self.set_process_values(**{target_var: float(value)})
+                state, event_type = "warning", "SENSOR_FORCE"
+                message = f"{asset_id}: valor forzado -> {float(value)} ({target_var})"
+            elif a in ("FAULT", "FALLA"):
+                state, event_type, message = "warning", "SENSOR_FAULT", f"{asset_id}: sensor en FALLA"
+                self.alarm_manager.trigger(f"{asset_id}_FAULT", "WARNING", asset_id,
+                                           f"Sensor {asset_id} reporta falla")
+
+        # ---- NETWORK / SWITCH / FIREWALL ----
+        elif "FIREWALL" in t or "SWITCH" in t or "GATEWAY" in t or "EWON" in t or "MGUARD" in t:
+            if a in ("DENY", "BLOCK", "DESACTIVAR"):
+                state, event_type = "blocked", "FW_RULE_DENY"
+                message = f"{asset_id}: regla DENY {protocol or ''} hacia {target_id or 'N/D'}"
+            elif a in ("PERMIT", "ALLOW", "ACTIVAR"):
+                state, event_type = "config", "FW_RULE_PERMIT"
+                message = f"{asset_id}: regla PERMIT {protocol or ''} hacia {target_id or 'N/D'}"
+            else:
+                state, event_type = "config", "NET_CONFIG"
+                message = f"{asset_id}: cambio de configuración de red"
+
+        # ---- SERVER / SCADA / MES / HISTORIAN ----
+        elif "SCADA" in t or "MES" in t or "HIST" in t or "SERVER" in t:
+            if a in ("RESTART", "REINICIAR"):
+                state, event_type, message = "config", "SERVICE_RESTART", f"{asset_id}: servicio reiniciado"
+            elif a in ("STOP",):
+                state, event_type, message = "warning", "SERVICE_STOP", f"{asset_id}: servicio detenido"
+
+        # ---- WORKSTATION / ENGINEERING ----
+        elif "WORK" in t or "ENG" in t or "PC" in t:
+            tool = (str(value or action)).upper()
+            if "NMAP" in tool or "WIRESHARK" in tool or "SCAN" in tool:
+                state, event_type = "scan", "ENG_RECON"
+                message = f"{asset_id}: herramienta de reconocimiento '{value or action}'"
+            else:
+                event_type, message = "ENG_TOOL", f"{asset_id}: lanzó '{value or action}'"
+
+        # severidad final
+        severity = self.ACTIVITY_SEVERITY.get(state, "INFO")
+
+        # marcar actividad (colorea el activo y, si aplica, la conexión destino)
+        self._set_activity(asset_id, state, event_type, protocol, target_id)
+
+        # cambiar estado del equipo conocido (si existe en el backend)
+        eq = self.get_equipment(asset_id)
+        if eq and state in ("warning",):
+            try:
+                eq.set_status(EquipmentStatus.WARNING)
+            except Exception:
+                pass
+
+        # evento SIEM
+        self.add_event(event_type, severity, asset_id, message)
+        return self.get_state()
 
     # =========================================================
     # EQUIPMENT LOOKUP
@@ -1336,6 +1586,15 @@ class Plant:
 
             "alarms":
                 self.alarm_manager.get_state(),
+
+            "activity":
+                self.activity,
+
+            "assets":
+                {aid: ap.to_dict() for aid, ap in self.assets_runtime.items()},
+
+            "health":
+                self._compute_health(),
 
             "equipment": [
                 equipment.get_info()

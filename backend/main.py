@@ -1,4 +1,5 @@
 import asyncio
+from typing import Optional
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -41,6 +42,19 @@ class AttackRequest(BaseModel):
 class SetpointRequest(BaseModel):
     variable: str
     value: float
+class EquipmentActionRequest(BaseModel):
+    asset_id:   str
+    asset_type: str = ""
+    action:     str
+    value:      Optional[float] = None
+    target_id:  Optional[str]   = None
+    protocol:   Optional[str]   = None
+
+
+class LoadTopologyRequest(BaseModel):
+    assets:      list = []
+    connections: list = []
+    variables:   list = []
 @app.get("/")
 def root():
     return {
@@ -275,6 +289,39 @@ def load_safe_program():
         "Programa PLC seguro restaurado desde backup — recuperación de incidente"
     )
     return plant.get_plc_program()
+@app.post("/api/equipment/action")
+def equipment_action(request: EquipmentActionRequest):
+    """Acción genérica desde la interfaz de cualquier equipo.
+    Genera evento SIEM + actividad para colorear + impacto real en el proceso."""
+    return plant.apply_equipment_action(
+        asset_id   = request.asset_id,
+        asset_type = request.asset_type,
+        action     = request.action,
+        value      = request.value,
+        target_id  = request.target_id,
+        protocol   = request.protocol,
+    )
+
+
+@app.post("/api/plant/load")
+def load_topology(request: LoadTopologyRequest):
+    """Carga el inventario del Excel y crea un proceso por activo."""
+    return plant.load_topology(
+        assets      = request.assets,
+        connections = request.connections,
+        variables   = request.variables,
+    )
+
+
+@app.get("/api/equipment/{asset_id}")
+def get_asset_state(asset_id: str):
+    """Estado vivo de un activo concreto (su proceso individual)."""
+    ap = plant.assets_runtime.get(asset_id)
+    if ap is None:
+        raise HTTPException(status_code=404, detail=f"Activo {asset_id} no cargado")
+    return ap.to_dict()
+
+
 # =====================================================================
 @app.websocket("/ws/plant")
 async def plant_websocket(websocket: WebSocket):

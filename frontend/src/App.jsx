@@ -28,6 +28,7 @@ import PurduePage from "./components/PurduePage";
 import SIEMPage from "./components/SIEMPage";
 import AttackerConsole from "./components/AttackerConsole";
 import RecoveryConsole from "./components/RecoveryConsole";
+import { loadTopology } from "./utils/otActions";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -593,7 +594,7 @@ function App() {
                     ? "plant-status running"
                     : "plant-status stopped"
                 }
-              >
+              >import { loadTopology } from "./utils/otActions";
                 <span />
 
                 <div>
@@ -678,6 +679,8 @@ function App() {
                 plant?.alarms?.active ??
                 []
               }
+              activity={plant?.activity ?? {}}
+              health={plant?.health ?? {}}
               labData={labData}
             />
 
@@ -704,6 +707,11 @@ function App() {
                   );
 
                   setLabData(data);
+                  loadTopology(
+                    data.assets || [],
+                    data.connections || [],
+                    data.variables || []
+                  ).catch(() => {});
                   setShowImporter(false);
                 }}
                 onClose={() =>

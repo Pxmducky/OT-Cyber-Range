@@ -8,6 +8,7 @@
 import { useState, useMemo } from "react";
 import { EquipmentIcon }        from "./EquipmentIcons";
 import EquipmentInterface       from "./EquipmentInterface";
+import { activityColor, connActivity, assetActivity, healthColor, connHealth } from "../utils/otActions";
 
 function normAsset(a) {
   if (!a) return null;
@@ -179,10 +180,10 @@ function EquipmentCard({ asset, size = 72, onClick, selected = false }) {
 }
 
 /* ── EQUIPMENT PHOTO CARD ── */
-function EquipmentPhotoCard({ asset, selected, onClick, compact = false }) {
+function EquipmentPhotoCard({ asset, selected, onClick, compact = false, actColor = null, healthCol = null }) {
   const [imgErr, setImgErr] = useState(false);
   const photoUrl = getPhotoUrl(asset);
-  const st  = statusColor(asset.status);
+  const st  = healthCol || actColor || statusColor(asset.status);
   const pu  = PURDUE[asset.purdueLevel] ?? PURDUE["1"];
   const cardW = compact ? 86 : 106;
   const imgH  = compact ? 56 : 70;
@@ -200,7 +201,7 @@ function EquipmentPhotoCard({ asset, selected, onClick, compact = false }) {
         transition: "all .18s", position: "relative",
       }}
     >
-      <div style={{ height: 3, background: pu.color }}/>
+      <div style={{ height: 3, background: actColor || pu.color }}/>
       <div style={{ position:"absolute", top:7, right:7, width:7, height:7, borderRadius:"50%", background:st, boxShadow:`0 0 5px ${st}`, zIndex:2 }}/>
       <div style={{ position:"relative", height:imgH, background:"#040a12", overflow:"hidden" }}>
         {photoUrl && !imgErr ? (
@@ -242,7 +243,7 @@ function MiniPhoto({ asset }) {
 }
 
 /* ── TOPOLOGY VIEW ── */
-function TopologyView({ assets, connections, selectedId, onAssetClick, lineColor }) {
+function TopologyView({ assets, connections, selectedId, onAssetClick, lineColor, activity = {}, health = {} }) {
   const LEVEL_ORDER = ["3.5", "3", "2", "1", "0"];
   const CARD_W = 106;
   const CARD_H = 122;
@@ -311,8 +312,12 @@ function TopologyView({ assets, connections, selectedId, onAssetClick, lineColor
           const to   = pos[conn.targetId];
           if (!from || !to) return null;
           const proto  = (conn.protocol || "").split(",")[0];
-          const color  = protoColor(proto);
+          const act    = connActivity(activity, conn.sourceId, conn.targetId);
+          const ch     = connHealth(health, conn.sourceId, conn.targetId);
+          const critColor = ch !== "normal" ? healthColor(ch) : null;
+          const color  = critColor || (act && activityColor(act.state)) || protoColor(proto);
           const dir    = conn.direction ?? "bidirectional";
+          const liveDur = (act || critColor) ? "0.5s" : "1.4s";
           const dx = to.cx - from.cx;
           const dy = to.cy - from.cy;
           const d  = `M${from.cx},${from.cy} C${from.cx+dx*0.1},${from.cy+dy*0.5} ${to.cx-dx*0.1},${to.cy-dy*0.5} ${to.cx},${to.cy}`;
@@ -321,11 +326,11 @@ function TopologyView({ assets, connections, selectedId, onAssetClick, lineColor
           return (
             <g key={i}>
               <path d={d} fill="none" stroke={color} strokeWidth={4} opacity={0.08}/>
-              <path d={d} fill="none" stroke={color} strokeWidth={1.8} strokeDasharray="10 5" opacity={0.75}>
+              <path d={d} fill="none" stroke={color} strokeWidth={(act || critColor) ? 2.6 : 1.8} strokeDasharray="10 5" opacity={(act || critColor) ? 1 : 0.75}>
                 <animate attributeName="stroke-dashoffset"
                   from={dir === "inbound" ? 0 : 30}
                   to={dir   === "inbound" ? 30 : 0}
-                  dur="1.4s" repeatCount="indefinite"/>
+                  dur={liveDur} repeatCount="indefinite"/>
               </path>
               <rect x={midX-20} y={midY-7} width={40} height={12} rx={3} fill="#04080f" opacity={0.85}/>
               <text x={midX} y={midY+2} textAnchor="middle" fontSize={7} fill={color} fontFamily="monospace" opacity={0.9}>{proto}</text>
@@ -340,7 +345,9 @@ function TopologyView({ assets, connections, selectedId, onAssetClick, lineColor
           if (!p) return null;
           return (
             <div key={asset.id} style={{ position:"absolute", left:p.x, top:p.y, width:CARD_W, zIndex:10 }}>
-              <EquipmentPhotoCard asset={asset} selected={selectedId === asset.id} onClick={onAssetClick}/>
+              <EquipmentPhotoCard asset={asset} selected={selectedId === asset.id} onClick={onAssetClick}
+                actColor={(() => { const a = assetActivity(activity, asset.id); return a ? activityColor(a.state) : null; })()}
+                healthCol={healthColor(health[asset.id] || "normal")}/>
             </div>
           );
         })}
@@ -350,7 +357,7 @@ function TopologyView({ assets, connections, selectedId, onAssetClick, lineColor
 }
 
 /* ── LINE DETAIL VIEW ── */
-function LineDetailView({ lineKey, assets, connections, lineMeta, onBack, onAssetClick, selectedId }) {
+function LineDetailView({ lineKey, assets, connections, lineMeta, onBack, onAssetClick, selectedId, activity = {}, health = {} }) {
   const meta      = lineMeta?.[lineKey] ?? LINE_META[lineKey] ?? { label: lineKey, color: "#4b5563", icon: "⚙", bg: "transparent" };
   const assetIds  = new Set(assets.map(a => a.id));
   const lineConns = connections.filter(c => assetIds.has(c.sourceId) || assetIds.has(c.targetId));
@@ -375,7 +382,7 @@ function LineDetailView({ lineKey, assets, connections, lineMeta, onBack, onAsse
         <div style={{ color:"#1e293b", fontSize:8, fontFamily:"monospace", flexShrink:0 }}>clic en equipo → interfaz completa</div>
       </div>
       <div style={{ flex:1, overflowY:"auto", overflowX:"auto", padding:"16px 24px 24px" }}>
-        <TopologyView assets={assets} connections={lineConns} selectedId={selectedId} onAssetClick={onAssetClick} lineColor={meta.color}/>
+        <TopologyView assets={assets} connections={lineConns} selectedId={selectedId} onAssetClick={onAssetClick} lineColor={meta.color} activity={activity} health={health}/>
       </div>
     </div>
   );
@@ -438,6 +445,8 @@ export default function DynamicPlant({
   labData      = null,
   events       = [],
   alarms       = [],
+  activity     = {},
+  health       = {},
   onAssetSelect,
   onImportRequest,
 }) {
@@ -544,6 +553,8 @@ export default function DynamicPlant({
           assets      = {byLine[activeLine] ?? []}
           connections = {connections}
           lineMeta    = {lineMeta}
+          activity    = {activity}
+          health      = {health}
           onBack      = {() => { setActiveLine(null); setSelectedAsset(null); }}
           onAssetClick= {handleAssetClick}
           selectedId  = {selectedAsset?.id}

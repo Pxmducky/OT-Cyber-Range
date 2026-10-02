@@ -1,419 +1,365 @@
 /**
  * HMIInterface.jsx
- * Interfaz HMI industrial — simula un panel Siemens KTP/TP Comfort.
- * Muestra proceso en tiempo real, alarmas, setpoints y tendencias.
+ * Panel HMI industrial conectado al MOTOR DE SIMULACIÓN del backend.
+ *
+ * - El proceso se muestra de forma GENÉRICA (Entrada → Proceso → Máquina →
+ *   Salida) para que aplique a cualquier tipo de empresa.
+ * - Todos los botones tienen impacto real sobre la planta del backend:
+ *     START/STOP/RESET  → /api/hmi/{start,stop,reset}
+ *     SET (setpoints)   → /api/hmi/setpoint
+ *     MANUAL (sliders)  → /api/process/set
+ *     ACK/RESET alarma  → /api/alarms/{acknowledge,reset}
+ * - Los valores (TEMP/PRESS/SPEED/VALVE), el estado y las alarmas se leen en
+ *   vivo desde /api/plant.
+ *
+ * Nota: el backend modela un único proceso físico; cualquier HMI abierto lo
+ * controla. Dar a cada activo su propio proceso es un paso posterior.
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
+const API_URL = "http://127.0.0.1:8000";
+
+/* ── Paleta (estilo SIMATIC oscuro) ── */
 const C = {
-  bg:     "#1a1a2e", panel: "#16213e", screen: "#0f0f23",
-  accent: "#00d2ff", green: "#00ff88", red: "#ff3366",
-  amber:  "#ffaa00", text:  "#e0e0e0", dim:   "#4a5568",
-  border: "#2d3748", mono:  "'Courier New', monospace",
+  bg:     "#0b1220", panel: "#111c2e", screen: "#0a1322",
+  accent: "#22d3ee", green: "#22c55e", red: "#ef4444",
+  amber:  "#f59e0b", text:  "#dbe4f0", dim:   "#5b6b82",
+  border: "#1e2d44", mono:  "'Consolas','Courier New',monospace",
 };
 
-/* ── Gauge SVG ── */
-function Gauge({ value, min=0, max=100, unit="", label="", alarm=false, hihi=false }) {
-  const pct   = Math.max(0, Math.min(1, (value - min) / (max - min)));
-  const angle = -135 + pct * 270;
-  const color = hihi ? C.red : alarm ? C.amber : C.green;
-  const r = 44;
-  const cx = 55, cy = 55;
-  // Arc path
-  const toRad = d => d * Math.PI / 180;
-  const arcX  = (deg) => cx + r * Math.cos(toRad(deg - 90));
-  const arcY  = (deg) => cy + r * Math.sin(toRad(deg - 90));
-  const startDeg = -135, endDeg = startDeg + pct * 270;
-  const largeArc = pct * 270 > 180 ? 1 : 0;
+/* ── Setpoints: variable backend, etiqueta, unidad y rango operativo ── */
+const SETPOINTS = [
+  { var: "TEMPERATURE",    label: "TEMPERATURE", unit: "°C",  key: "temperature",    min: 60,  max: 78,   step: 1 },
+  { var: "PRESSURE",       label: "PRESSURE",    unit: "bar", key: "pressure",       min: 3.0, max: 4.3,  step: 0.1 },
+  { var: "MOTOR_SPEED",    label: "MOTOR SPEED", unit: "RPM", key: "motor_speed",    min: 800, max: 1500, step: 50 },
+  { var: "VALVE_POSITION", label: "VALVE POS",   unit: "%",   key: "valve_position", min: 10,  max: 90,   step: 1 },
+];
 
+/* ── API helpers ── */
+async function apiGet(path) {
+  const res = await fetch(`${API_URL}${path}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+async function apiPost(path, body) {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data?.detail === "string" ? data.detail : `HTTP ${res.status}`);
+  return data;
+}
+
+/* ── Mini trend chart ── */
+function Trend({ data, color, unit, height = 54 }) {
+  const vals = data.slice(-40);
+  if (vals.length < 2) return <div style={{ height, background: C.screen, borderRadius: 4 }} />;
+  const mn = Math.min(...vals), mx = Math.max(...vals) || mn + 1;
+  const w = 240, h = height;
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * w},${h - ((v - mn) / (mx - mn)) * (h - 8) - 4}`).join(" ");
   return (
-    <svg viewBox="0 0 110 90" style={{ width:"100%", maxWidth:120 }}>
-      {/* Background arc */}
-      <path d={`M${arcX(-135)} ${arcY(-135)} A${r} ${r} 0 1 1 ${arcX(135)} ${arcY(135)}`}
-        fill="none" stroke="#1e293b" strokeWidth={6} strokeLinecap="round"/>
-      {/* Value arc */}
-      {pct > 0 && (
-        <path d={`M${arcX(-135)} ${arcY(-135)} A${r} ${r} 0 ${largeArc} 1 ${arcX(endDeg)} ${arcY(endDeg)}`}
-          fill="none" stroke={color} strokeWidth={6} strokeLinecap="round"/>
-      )}
-      {/* Needle */}
-      <line
-        x1={cx} y1={cy}
-        x2={cx + (r-8) * Math.cos(toRad(angle - 90))}
-        y2={cy + (r-8) * Math.sin(toRad(angle - 90))}
-        stroke={color} strokeWidth={2} strokeLinecap="round"/>
-      <circle cx={cx} cy={cy} r={4} fill={color}/>
-      {/* Value text */}
-      <text x={cx} y={cy+18} textAnchor="middle" fill={color} fontSize={12} fontFamily={C.mono} fontWeight="bold">
-        {typeof value === 'number' ? value.toFixed(1) : value}
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height }} preserveAspectRatio="none">
+      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} />
+      <text x={w - 2} y={12} textAnchor="end" fill={color} fontSize={9} fontFamily={C.mono}>
+        {vals[vals.length - 1].toFixed(1)} {unit}
       </text>
-      <text x={cx} y={cy+28} textAnchor="middle" fill={C.dim} fontSize={7} fontFamily={C.mono}>{unit}</text>
-      {/* Label */}
-      <text x={cx} y={84} textAnchor="middle" fill={C.text} fontSize={8} fontFamily={C.mono}>{label}</text>
     </svg>
   );
 }
 
-/* ── LED indicator ── */
-function LED({ on, color, label, size=10 }) {
-  return (
-    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-      <div style={{ width:size, height:size, borderRadius:"50%", background: on ? color : "#1e293b", boxShadow: on ? `0 0 8px ${color}` : "none", flexShrink:0, transition:"all .3s" }}/>
-      {label && <span style={{ color: on ? C.text : C.dim, fontSize:10, fontFamily:C.mono }}>{label}</span>}
-    </div>
-  );
-}
-
-/* ── Trend mini chart ── */
-function TrendChart({ data, color, label, unit, height=60 }) {
-  const vals = data.slice(-40);
-  if (vals.length < 2) return <div style={{ height, background:"#0a0f1a", borderRadius:4 }}/>;
-  const mn = Math.min(...vals);
-  const mx = Math.max(...vals) || mn + 1;
-  const w = 240, h = height;
-  const pts = vals.map((v, i) => `${(i/(vals.length-1))*w},${h - ((v-mn)/(mx-mn)) * (h-8) - 4}`).join(' ');
-  return (
-    <div>
-      <svg viewBox={`0 0 ${w} ${h}`} style={{ width:"100%", height }} preserveAspectRatio="none">
-        <defs>
-          <linearGradient id={`grad-${label}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity="0.3"/>
-            <stop offset="100%" stopColor={color} stopOpacity="0"/>
-          </linearGradient>
-        </defs>
-        <polygon points={`0,${h} ${pts} ${w},${h}`} fill={`url(#grad-${label})`}/>
-        <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5}/>
-        {/* Last value */}
-        {vals.length > 0 && (
-          <text x={w-2} y={h-6} textAnchor="end" fill={color} fontSize={8} fontFamily={C.mono}>
-            {vals[vals.length-1].toFixed(1)} {unit}
-          </text>
-        )}
-      </svg>
-    </div>
-  );
-}
-
 export default function HMIInterface({ asset, labData, plant, onBack }) {
-  const [screen,      setScreen]      = useState("main");      // main | alarms | setpoints | trends | manual
-  const [processVals, setProcessVals] = useState({ Temperature: 68.4, Pressure: 3.82, Motor_Speed: 1450, Valve_Pos: 50.0, Production_Rate: 95 });
-  const [alarms,      setAlarms]      = useState([]);
-  const [ackAlarms,   setAckAlarms]   = useState(new Set());
-  const [setpoints,   setSetpoints]   = useState({ T_Setpoint: 70, P_Setpoint: 4.0, Speed_Setpoint: 1450 });
-  const [editSP,      setEditSP]      = useState(null);
-  const [trendData,   setTrendData]   = useState({ Temperature: [], Pressure: [], Motor_Speed: [] });
-  const [manualMode,  setManualMode]  = useState(false);
-  const [manualMotor, setManualMotor] = useState(1450);
-  const [manualValve, setManualValve] = useState(50);
-  const [runState,    setRunState]    = useState(true);
-  const tickRef = useRef(null);
+  const [live, setLive]           = useState(null);
+  const [backendUp, setBackendUp] = useState(true);
+  const [now, setNow]             = useState(new Date());
+  const [view, setView]           = useState("process");      // process | trends
+  const [showSP, setShowSP]       = useState(true);
+  const [spInput, setSpInput]     = useState({});             // valores editados de setpoint
+  const [manual, setManual]       = useState(false);
+  const [manualVals, setManualVals] = useState({ motor_speed: 1450, valve_position: 50 });
+  const [busy, setBusy]           = useState(false);
+  const [msg, setMsg]             = useState(null);
+  const [trend, setTrend]         = useState({ temperature: [], pressure: [], motor_speed: [] });
+  const manualTimer = useRef(null);
 
-  /* ── Variables del Excel ── */
+  const flash = useCallback((type, text, ms = 3000) => {
+    setMsg({ type, text }); setTimeout(() => setMsg(null), ms);
+  }, []);
+
+  /* ── Polling del estado real ── */
   useEffect(() => {
-    const assetVars = labData?.variables?.filter(v => v.assetId === asset.id) ?? [];
-    if (assetVars.length > 0) {
-      const vals = {};
-      assetVars.forEach(v => { vals[v.variable] = parseFloat(v.initialValue) || 0; });
-      setProcessVals(prev => ({ ...prev, ...vals }));
-    }
-  }, [asset.id]);
+    let timer;
+    const poll = async () => {
+      try {
+        const data = await apiGet("/api/plant");
+        setLive(data); setBackendUp(true); setNow(new Date());
+        const p = data.process || {};
+        setTrend(prev => ({
+          temperature: [...prev.temperature.slice(-39), p.temperature ?? 0],
+          pressure:    [...prev.pressure.slice(-39),    p.pressure ?? 0],
+          motor_speed: [...prev.motor_speed.slice(-39), p.motor_speed ?? 0],
+        }));
+      } catch { setBackendUp(false); }
+      timer = setTimeout(poll, 1000);
+    };
+    poll();
+    return () => clearTimeout(timer);
+  }, []);
 
-  /* ── Simulación de proceso ── */
-  useEffect(() => {
-    if (!runState) return;
-    tickRef.current = setInterval(() => {
-      setProcessVals(prev => {
-        const drift = () => (Math.random() - 0.5) * 0.3;
-        const T  = Math.max(20, Math.min(120, prev.Temperature  + drift()));
-        const P  = Math.max(0,  Math.min(8,   prev.Pressure     + drift() * 0.05));
-        const MS = Math.max(0,  Math.min(2000,prev.Motor_Speed  + (Math.random()-0.5)*20));
-        const VP = Math.max(0,  Math.min(100, prev.Valve_Pos    + (Math.random()-0.5)*2));
-        const PR = Math.max(0,  Math.min(100, prev.Production_Rate + (Math.random()-0.5)*1));
-        return { Temperature: T, Pressure: P, Motor_Speed: Math.round(MS), Valve_Pos: Math.round(VP), Production_Rate: Math.round(PR) };
-      });
+  const proc    = live?.process || {};
+  const status  = live?.plant?.status || "—";
+  const running = status === "RUNNING";
+  const line    = live?.plant?.line || "PRODUCTION LINE 01";
+  const activeAlarms = live?.alarms?.active || [];
 
-      // Trends
-      setTrendData(prev => ({
-        Temperature: [...prev.Temperature.slice(-39), processVals.Temperature],
-        Pressure:    [...prev.Pressure.slice(-39),    processVals.Pressure],
-        Motor_Speed: [...prev.Motor_Speed.slice(-39), processVals.Motor_Speed],
-      }));
+  /* ── Botones de producción ── */
+  async function hmi(action) {
+    setBusy(true);
+    try { const d = await apiPost(`/api/hmi/${action}`); setLive(d); flash("ok", `${action.toUpperCase()} OK`); }
+    catch (e) { flash("error", e.message || "Error"); }
+    finally { setBusy(false); }
+  }
 
-      // Generate/clear alarms
-      setAlarms(prev => {
-        const active = [];
-        if (processVals.Temperature > 85)   active.push({ id:"T_HH", lvl:"CRITICAL",  msg:"TEMPERATURA MUY ALTA",       val:`${processVals.Temperature.toFixed(1)}°C > 85°C`  });
-        if (processVals.Temperature > 80)   active.push({ id:"T_H",  lvl:"WARNING",   msg:"Temperatura alta",           val:`${processVals.Temperature.toFixed(1)}°C > 80°C`  });
-        if (processVals.Pressure > 5.0)     active.push({ id:"P_HH", lvl:"CRITICAL",  msg:"PRESIÓN MUY ALTA",           val:`${processVals.Pressure.toFixed(2)} bar > 5.0`    });
-        if (processVals.Motor_Speed < 400)  active.push({ id:"M_LL", lvl:"WARNING",   msg:"Velocidad motor muy baja",   val:`${processVals.Motor_Speed} RPM < 400`            });
-        return active;
-      });
-    }, 1000);
-    return () => clearInterval(tickRef.current);
-  }, [runState, processVals]);
+  /* ── Aplicar setpoint (impacto real) ── */
+  async function applySetpoint(sp) {
+    const raw = spInput[sp.var];
+    const value = Number(raw);
+    if (raw == null || Number.isNaN(value)) { flash("error", `Valor inválido para ${sp.label}`); return; }
+    setBusy(true);
+    try { const d = await apiPost("/api/hmi/setpoint", { variable: sp.var, value }); setLive(d); flash("ok", `${sp.label} = ${value}${sp.unit}`); }
+    catch (e) { flash("error", e.message || "Error al aplicar setpoint"); }
+    finally { setBusy(false); }
+  }
 
-  const unAcked = alarms.filter(a => !ackAlarms.has(a.id)).length;
-  const T  = processVals.Temperature;
-  const P  = processVals.Pressure;
-  const MS = processVals.Motor_Speed;
-  const VP = processVals.Valve_Pos;
+  /* ── Control manual directo (slider → /api/process/set) ── */
+  function manualChange(key, value) {
+    setManualVals(v => ({ ...v, [key]: value }));
+    clearTimeout(manualTimer.current);
+    manualTimer.current = setTimeout(async () => {
+      try { const d = await apiPost("/api/process/set", { [key]: value }); setLive(d); }
+      catch (e) { flash("error", e.message); }
+    }, 180);
+  }
 
-  /* ── Frame del panel HMI ── */
+  /* ── Alarmas ── */
+  async function alarmAction(path, alarm_id) {
+    try { await apiPost(`/api/alarms/${path}`, { alarm_id }); const d = await apiGet("/api/plant"); setLive(d); }
+    catch (e) { flash("error", e.message); }
+  }
+
+  const bigBtn = (label, color, fn, active = false, dis = false) => (
+    <button onClick={fn} disabled={busy || dis}
+      style={{ flex: 1, background: active ? color : `${color}14`, border: `1px solid ${color}`,
+        color: active ? "#06121f" : color, padding: "16px 0", cursor: busy || dis ? "not-allowed" : "pointer",
+        fontFamily: C.mono, fontSize: 13, fontWeight: 700, letterSpacing: ".08em",
+        borderRadius: 0, opacity: dis ? 0.4 : 1 }}>
+      {label}
+    </button>
+  );
+
+  const kpis = [
+    { l: "TEMP",  v: proc.temperature,    u: "°C",  d: 1 },
+    { l: "PRESS", v: proc.pressure,       u: "bar", d: 2 },
+    { l: "SPEED", v: proc.motor_speed,    u: "RPM", d: 0 },
+    { l: "VALVE", v: proc.valve_position, u: "%",   d: 0 },
+  ];
+
   return (
-    <div style={{ height:"100%", display:"flex", flexDirection:"column", background:C.bg, fontFamily:"'Segoe UI', sans-serif" }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: C.bg, fontFamily: "'Segoe UI',sans-serif" }}>
 
-      {/* Bezel top */}
-      <div style={{ background:"linear-gradient(180deg,#2a2a4a,#1a1a2e)", padding:"8px 16px", display:"flex", alignItems:"center", gap:12, flexShrink:0, borderBottom:"1px solid #3d3d6b" }}>
-        <button onClick={onBack} style={{ background:"none", border:"1px solid #3d3d6b", color:C.dim, padding:"3px 10px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:C.mono }}>← VOLVER</button>
+      {/* ── Marca / cabecera del panel ── */}
+      <div style={{ background: "linear-gradient(180deg,#19293f,#101a2b)", padding: "8px 16px", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, borderBottom: `1px solid ${C.border}` }}>
+        <button onClick={onBack} style={{ background: "none", border: `1px solid ${C.border}`, color: C.dim, padding: "3px 10px", borderRadius: 4, cursor: "pointer", fontSize: 9, fontFamily: C.mono }}>← VOLVER</button>
+        <div>
+          <div style={{ color: "#e2e8f0", fontWeight: 900, fontSize: 13, letterSpacing: ".15em" }}>{(asset.vendor || "SIEMENS").toUpperCase()}</div>
+          <div style={{ color: C.dim, fontSize: 8, letterSpacing: ".1em" }}>{(asset.model || "SIMATIC HMI").toUpperCase()}</div>
+        </div>
+        <div style={{ color: C.text, fontSize: 10, marginLeft: "auto", fontFamily: C.mono }}>{asset.id} — {asset.name}</div>
+        {msg && (
+          <div style={{ color: msg.type === "ok" ? C.green : C.red, fontSize: 10, fontFamily: C.mono, border: `1px solid ${(msg.type === "ok" ? C.green : C.red)}44`, padding: "2px 8px", borderRadius: 4 }}>{msg.text}</div>
+        )}
+        {!backendUp && <div style={{ color: C.red, fontSize: 9, fontFamily: C.mono }}>⚠ sin backend</div>}
+      </div>
 
-        {/* SIEMENS brand */}
-        <div style={{ color:"#009999", fontWeight:900, fontSize:13, letterSpacing:".15em" }}>SIEMENS</div>
-        <div style={{ color:C.dim, fontSize:9, letterSpacing:".1em" }}>SIMATIC HMI</div>
+      {/* ── Pantalla ── */}
+      <div style={{ flex: 1, background: C.screen, display: "flex", flexDirection: "column", overflow: "auto", padding: 14 }}>
 
-        {/* Panel ID */}
-        <div style={{ color:C.text, fontSize:10, marginLeft:"auto" }}>{asset.id} — {asset.name}</div>
+        {/* Barra de título */}
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, padding: "10px 16px", display: "flex", alignItems: "center", marginBottom: 12, background: C.panel }}>
+          <span style={{ color: C.text, fontFamily: C.mono, fontSize: 13, fontWeight: 700, letterSpacing: ".08em" }}>{line.toUpperCase()}</span>
+          <div style={{ flex: 1 }} />
+          <span style={{ color: C.dim, fontFamily: C.mono, fontSize: 12 }}>{now.toLocaleTimeString("en-GB")}</span>
+        </div>
 
-        {/* Alarm indicator */}
-        {unAcked > 0 && (
-          <div style={{ background:"rgba(255,51,102,.2)", border:"1px solid rgba(255,51,102,.5)", color:C.red, fontSize:10, padding:"3px 8px", borderRadius:4, fontFamily:C.mono, animation:"blink 1s infinite" }}>
-            ⚠ {unAcked} ALARMA{unAcked>1?"S":""}
+        {/* Sub-cabecera: MAIN SCREEN / estado */}
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["process", "trends"].map(v => (
+              <button key={v} onClick={() => setView(v)} style={{ background: "none", border: "none", color: view === v ? C.text : C.dim, fontFamily: C.mono, fontSize: 11, letterSpacing: ".1em", cursor: "pointer", padding: 0, textDecoration: view === v ? "underline" : "none" }}>
+                {v === "process" ? "MAIN SCREEN" : "TRENDS"}
+              </button>
+            ))}
+          </div>
+          <div style={{ flex: 1 }} />
+          <span style={{ color: running ? C.green : C.red, fontFamily: C.mono, fontSize: 12, fontWeight: 700, letterSpacing: ".1em" }}>{running ? "RUNNING" : "STOPPED"}</span>
+        </div>
+
+        {/* ── Mímico genérico / Manual / Trends ── */}
+        {view === "process" && !manual && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "24px 0", minHeight: 150 }}>
+            {/* Entrada / Proceso */}
+            <div style={{ width: 86, height: 100, borderRadius: 8, border: `1px solid ${C.accent}55`, background: `linear-gradient(180deg,${C.accent}22,${C.accent}08)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono }}>PROCESS</div>
+              <div style={{ color: C.text, fontSize: 20, fontWeight: 700, fontFamily: C.mono }}>{Math.round(proc.production_rate ?? 0)}<span style={{ fontSize: 11 }}>%</span></div>
+            </div>
+            <div style={{ width: 36, height: 2, background: C.border }} />
+            {/* Bomba P-01 */}
+            <div style={{ textAlign: "center" }}>
+              <div style={{ width: 54, height: 54, borderRadius: "50%", border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", color: running ? C.accent : C.dim, fontSize: 22, animation: running ? "spin 2.5s linear infinite" : "none" }}>↻</div>
+              <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono, marginTop: 4 }}>P-01</div>
+            </div>
+            <div style={{ width: 36, height: 2, background: C.border }} />
+            {/* Máquina */}
+            <div style={{ width: 150, height: 100, borderRadius: 8, border: `1px solid ${C.border}`, background: C.panel, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <div style={{ fontSize: 26 }}>🏭</div>
+              <div style={{ color: C.accent, fontSize: 10, fontFamily: C.mono, letterSpacing: ".1em" }}>MACHINE</div>
+            </div>
+            {/* Válvula de salida V-01 */}
+            <div style={{ textAlign: "center", marginLeft: 8 }}>
+              <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono }}>V-01</div>
+              <div style={{ width: 22, height: 22, margin: "6px auto", transform: "rotate(45deg)", background: (proc.valve_position ?? 0) > 85 ? C.red : C.accent }} />
+              <div style={{ color: C.green, fontSize: 14, fontWeight: 700, fontFamily: C.mono }}>{Math.round(proc.valve_position ?? 0)}%</div>
+            </div>
           </div>
         )}
 
-        {/* Status */}
-        <LED on={runState} color={C.green} label={runState ? "RUN" : "STOP"} size={8}/>
-        <div style={{ fontSize:9, fontFamily:C.mono, color:C.dim }}>
-          {new Date().toLocaleTimeString()}
+        {view === "process" && manual && (
+          <div style={{ padding: "12px 0", display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ color: C.amber, fontFamily: C.mono, fontSize: 11, fontWeight: 700, letterSpacing: ".1em" }}>⚠ CONTROL MANUAL — las palancas escriben directo al proceso real</div>
+            {[
+              { key: "motor_speed",    label: "MOTOR SPEED", unit: "RPM", min: 0, max: 2000, step: 50 },
+              { key: "valve_position", label: "VALVE POS",   unit: "%",   min: 0, max: 100,  step: 1 },
+            ].map(s => (
+              <div key={s.key} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, padding: "12px 14px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ color: C.dim, fontSize: 10, fontFamily: C.mono }}>{s.label}</span>
+                  <span style={{ color: C.accent, fontFamily: C.mono, fontSize: 13, fontWeight: 700 }}>{manualVals[s.key]} {s.unit}</span>
+                </div>
+                <input type="range" min={s.min} max={s.max} step={s.step} value={manualVals[s.key]}
+                  onChange={e => manualChange(s.key, Number(e.target.value))}
+                  style={{ width: "100%", accentColor: C.accent }} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {view === "trends" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "6px 0" }}>
+            {[
+              { k: "temperature", label: "TEMPERATURE", unit: "°C",  color: "#f59e0b" },
+              { k: "pressure",    label: "PRESSURE",    unit: "bar", color: "#22d3ee" },
+              { k: "motor_speed", label: "MOTOR SPEED", unit: "RPM", color: "#22c55e" },
+            ].map(t => (
+              <div key={t.k} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px 10px" }}>
+                <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono, marginBottom: 4 }}>{t.label} ({t.unit})</div>
+                <Trend data={trend[t.k] || []} color={t.color} unit={t.unit} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* KPIs */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, margin: "4px 0 12px" }}>
+          {kpis.map(({ l, v, u, d }) => (
+            <div key={l} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, padding: "10px 12px", textAlign: "center" }}>
+              <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono, marginBottom: 4 }}>{l}</div>
+              <div style={{ color: C.text, fontSize: 20, fontFamily: C.mono, fontWeight: 700 }}>{v == null ? "—" : Number(v).toFixed(d)}</div>
+              <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono }}>{u}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* PROCESS SETPOINTS */}
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, marginBottom: 12 }}>
+          <button onClick={() => setShowSP(s => !s)} style={{ width: "100%", background: C.panel, border: "none", borderBottom: showSP ? `1px solid ${C.border}` : "none", color: C.accent, fontFamily: C.mono, fontSize: 10, fontWeight: 700, letterSpacing: ".1em", padding: "10px 14px", cursor: "pointer", textAlign: "left" }}>
+            {showSP ? "▼" : "▶"} PROCESS SETPOINTS
+          </button>
+          {showSP && (
+            <div style={{ padding: "6px 14px 12px" }}>
+              {SETPOINTS.map(sp => {
+                const cur = proc[sp.key];
+                const ok = cur != null && cur >= sp.min && cur <= sp.max;
+                return (
+                  <div key={sp.var} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.border}44` }}>
+                    <div style={{ minWidth: 150 }}>
+                      <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono }}>{sp.label}</div>
+                      <div style={{ color: ok ? C.green : C.amber, fontSize: 14, fontFamily: C.mono, fontWeight: 700 }}>
+                        {cur == null ? "—" : Number(cur).toFixed(sp.step < 1 ? 1 : 0)} <span style={{ fontSize: 9, color: C.dim }}>{sp.unit}</span>
+                      </div>
+                    </div>
+                    <div style={{ flex: 1 }} />
+                    <div style={{ color: ok ? C.green : C.amber, fontFamily: C.mono, fontSize: 9, border: `1px solid ${(ok ? C.green : C.amber)}55`, borderRadius: 4, padding: "2px 8px" }}>{ok ? "OK" : "OUT"}</div>
+                    <input
+                      type="number" step={sp.step}
+                      placeholder={`${sp.min} → ${sp.max}`}
+                      value={spInput[sp.var] ?? ""}
+                      onChange={e => setSpInput(v => ({ ...v, [sp.var]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === "Enter") applySetpoint(sp); }}
+                      style={{ width: 96, background: C.screen, border: `1px solid ${C.border}`, color: C.text, padding: "5px 8px", borderRadius: 4, fontSize: 11, fontFamily: C.mono, outline: "none" }} />
+                    <button onClick={() => applySetpoint(sp)} disabled={busy}
+                      style={{ background: `${C.accent}18`, border: `1px solid ${C.accent}`, color: C.accent, padding: "5px 12px", borderRadius: 4, cursor: busy ? "not-allowed" : "pointer", fontSize: 10, fontFamily: C.mono, fontWeight: 700 }}>SET</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* ALARM STATUS */}
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, background: C.panel }}>
+          <div style={{ display: "flex", alignItems: "center", padding: "10px 14px", borderBottom: activeAlarms.length ? `1px solid ${C.border}` : "none" }}>
+            <span style={{ color: C.dim, fontFamily: C.mono, fontSize: 10, letterSpacing: ".1em" }}>⚠ ALARM STATUS</span>
+            <div style={{ flex: 1 }} />
+            <span style={{ color: activeAlarms.length ? C.red : C.green, fontFamily: C.mono, fontSize: 10, fontWeight: 700 }}>
+              {activeAlarms.length ? `${activeAlarms.length} ACTIVE ALARM(S)` : "NO ACTIVE ALARMS"}
+            </span>
+          </div>
+          {activeAlarms.map(a => {
+            const crit = (a.severity || "").toUpperCase() === "CRITICAL";
+            const col = crit ? C.red : C.amber;
+            return (
+              <div key={a.alarm_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderBottom: `1px solid ${C.border}44` }}>
+                <div style={{ width: 9, height: 9, borderRadius: "50%", background: col, animation: a.acknowledged ? "none" : "blink 1s infinite", flexShrink: 0 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: col, fontFamily: C.mono, fontSize: 10, fontWeight: 700 }}>{a.severity} — {a.message}</div>
+                  <div style={{ color: C.dim, fontSize: 9, fontFamily: C.mono }}>{a.alarm_id} · {a.source}{a.acknowledged ? " · ACK" : ""}</div>
+                </div>
+                {!a.acknowledged && (
+                  <button onClick={() => alarmAction("acknowledge", a.alarm_id)}
+                    style={{ background: "none", border: `1px solid ${col}`, color: col, padding: "3px 10px", borderRadius: 4, cursor: "pointer", fontSize: 9, fontFamily: C.mono }}>ACK</button>
+                )}
+                <button onClick={() => alarmAction("reset", a.alarm_id)}
+                  style={{ background: "none", border: `1px solid ${C.border}`, color: C.dim, padding: "3px 10px", borderRadius: 4, cursor: "pointer", fontSize: 9, fontFamily: C.mono }}>RESET</button>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* Screen area */}
-      <div style={{ flex:1, background:C.screen, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-
-        {/* ── MAIN SCREEN ── */}
-        {screen === "main" && (
-          <div style={{ flex:1, padding:16, display:"flex", flexDirection:"column", gap:12 }}>
-            {/* Title */}
-            <div style={{ textAlign:"center", color:C.accent, fontFamily:C.mono, fontSize:12, fontWeight:700, letterSpacing:".1em", borderBottom:"1px solid #1e293b", paddingBottom:8 }}>
-              {asset.name?.toUpperCase() || "MANUFACTURING CELL"}
-            </div>
-
-            {/* Gauges row */}
-            <div style={{ display:"flex", gap:8, justifyContent:"center" }}>
-              <Gauge value={T}  min={0} max={120} unit="°C"  label="TEMPERATURA" alarm={T>80} hihi={T>90}/>
-              <Gauge value={P}  min={0} max={8}   unit="bar" label="PRESIÓN"     alarm={P>4.5} hihi={P>5.5}/>
-              <Gauge value={MS} min={0} max={2000} unit="RPM" label="VEL. MOTOR"  alarm={MS<400}/>
-            </div>
-
-            {/* Process values bar */}
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8 }}>
-              {[
-                { l:"VÁLVULA",    v:`${VP}%`,    col: VP>80 ? C.amber : C.text },
-                { l:"PRODUCCIÓN", v:`${processVals.Production_Rate}%`, col: C.green },
-                { l:"MODO",       v: manualMode ? "MANUAL" : "AUTO",   col: manualMode ? C.amber : C.accent },
-              ].map(({ l, v, col }) => (
-                <div key={l} style={{ background:"#0d1520", border:"1px solid #1e293b", borderRadius:6, padding:"8px 10px", textAlign:"center" }}>
-                  <div style={{ color:C.dim, fontSize:8, fontFamily:C.mono, marginBottom:2 }}>{l}</div>
-                  <div style={{ color:col, fontSize:13, fontFamily:C.mono, fontWeight:700 }}>{v}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Valve bar */}
-            <div style={{ background:"#0d1520", border:"1px solid #1e293b", borderRadius:6, padding:"8px 12px" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-                <span style={{ color:C.dim, fontSize:8, fontFamily:C.mono }}>APERTURA VÁLVULA</span>
-                <span style={{ color:C.accent, fontSize:10, fontFamily:C.mono, fontWeight:700 }}>{VP}%</span>
-              </div>
-              <div style={{ height:8, background:"#1e293b", borderRadius:4 }}>
-                <div style={{ width:`${VP}%`, height:"100%", background: VP>85 ? C.red : VP>70 ? C.amber : C.accent, borderRadius:4, transition:"width .5s" }}/>
-              </div>
-            </div>
-
-            {/* Quick alarms */}
-            {alarms.filter(a => !ackAlarms.has(a.id)).slice(0,2).map(a => (
-              <div key={a.id} style={{ background:"rgba(255,51,102,.08)", border:"1px solid rgba(255,51,102,.3)", borderRadius:5, padding:"6px 10px", display:"flex", alignItems:"center", gap:8 }}>
-                <div style={{ color:C.red, fontSize:10, fontFamily:C.mono, fontWeight:700 }}>⚠ {a.msg}</div>
-                <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, flex:1 }}>{a.val}</div>
-                <button onClick={() => setAckAlarms(prev => new Set([...prev, a.id]))}
-                  style={{ background:"none", border:"1px solid rgba(255,51,102,.3)", color:C.red, padding:"2px 8px", borderRadius:3, cursor:"pointer", fontSize:9, fontFamily:C.mono }}>
-                  ACK
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ── ALARMS SCREEN ── */}
-        {screen === "alarms" && (
-          <div style={{ flex:1, padding:12 }}>
-            <div style={{ color:C.accent, fontFamily:C.mono, fontSize:10, fontWeight:700, letterSpacing:".1em", marginBottom:10 }}>LISTA DE ALARMAS</div>
-            {alarms.length === 0 ? (
-              <div style={{ color:C.green, fontFamily:C.mono, fontSize:11, padding:12 }}>✓ Sin alarmas activas</div>
-            ) : alarms.map(a => (
-              <div key={a.id} style={{
-                background: a.lvl === "CRITICAL" ? "rgba(255,51,102,.1)" : "rgba(255,170,0,.1)",
-                border:     `1px solid ${a.lvl==="CRITICAL" ? "rgba(255,51,102,.4)" : "rgba(255,170,0,.4)"}`,
-                borderRadius:6, padding:"8px 12px", marginBottom:6,
-                display:"flex", alignItems:"center", gap:10,
-                opacity: ackAlarms.has(a.id) ? 0.4 : 1,
-              }}>
-                <div style={{ width:10, height:10, borderRadius:"50%", background: a.lvl==="CRITICAL" ? C.red : C.amber, flexShrink:0, animation: !ackAlarms.has(a.id) ? "blink 1s infinite" : "none" }}/>
-                <div style={{ flex:1 }}>
-                  <div style={{ color: a.lvl==="CRITICAL" ? C.red : C.amber, fontFamily:C.mono, fontSize:10, fontWeight:700 }}>{a.lvl} — {a.msg}</div>
-                  <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>{a.val}</div>
-                </div>
-                {!ackAlarms.has(a.id) && (
-                  <button onClick={() => setAckAlarms(prev => new Set([...prev, a.id]))}
-                    style={{ background:"none", border:`1px solid ${a.lvl==="CRITICAL"?C.red:C.amber}`, color: a.lvl==="CRITICAL"?C.red:C.amber, padding:"3px 10px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:C.mono }}>
-                    RECONOCER
-                  </button>
-                )}
-              </div>
-            ))}
-            <div style={{ marginTop:10 }}>
-              <button onClick={() => setAckAlarms(new Set(alarms.map(a => a.id)))}
-                style={{ background:"none", border:"1px solid #1e293b", color:C.dim, padding:"6px 14px", borderRadius:5, cursor:"pointer", fontSize:9, fontFamily:C.mono }}>
-                RECONOCER TODAS
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── SETPOINTS SCREEN ── */}
-        {screen === "setpoints" && (
-          <div style={{ flex:1, padding:12 }}>
-            <div style={{ color:C.accent, fontFamily:C.mono, fontSize:10, fontWeight:700, letterSpacing:".1em", marginBottom:10 }}>CONFIGURACIÓN DE SETPOINTS</div>
-            {Object.entries(setpoints).map(([key, val]) => (
-              <div key={key} style={{ background:"#0d1520", border:"1px solid #1e293b", borderRadius:6, padding:"10px 14px", marginBottom:8 }}>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-                  <div>
-                    <div style={{ color:C.dim, fontSize:8, fontFamily:C.mono, letterSpacing:".1em" }}>{key.replace(/_/g," ")}</div>
-                    {editSP === key ? (
-                      <input
-                        autoFocus
-                        type="number"
-                        defaultValue={val}
-                        onBlur={e => { setSetpoints(p => ({...p, [key]: parseFloat(e.target.value)||0})); setEditSP(null); }}
-                        onKeyDown={e => { if(e.key==='Enter'){setSetpoints(p=>({...p,[key]:parseFloat(e.target.value)||0}));setEditSP(null);} if(e.key==='Escape')setEditSP(null); }}
-                        style={{ background:"#1e293b", border:`1px solid ${C.accent}`, color:C.text, padding:"3px 8px", borderRadius:4, fontSize:13, fontFamily:C.mono, width:100, outline:"none" }}
-                      />
-                    ) : (
-                      <div style={{ color:C.accent, fontSize:15, fontFamily:C.mono, fontWeight:700 }}>{val}</div>
-                    )}
-                  </div>
-                  <div style={{ display:"flex", gap:6 }}>
-                    <button onClick={() => setSetpoints(p => ({...p, [key]: p[key]-1}))}
-                      style={{ background:"#1e293b", border:"1px solid #2d3748", color:C.text, width:28, height:28, borderRadius:4, cursor:"pointer", fontSize:14, fontFamily:C.mono }}>−</button>
-                    <button onClick={() => setSetpoints(p => ({...p, [key]: p[key]+1}))}
-                      style={{ background:"#1e293b", border:"1px solid #2d3748", color:C.text, width:28, height:28, borderRadius:4, cursor:"pointer", fontSize:14, fontFamily:C.mono }}>+</button>
-                    <button onClick={() => setEditSP(key)}
-                      style={{ background:`${C.accent}18`, border:`1px solid ${C.accent}44`, color:C.accent, padding:"3px 10px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:C.mono }}>EDITAR</button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ── TRENDS SCREEN ── */}
-        {screen === "trends" && (
-          <div style={{ flex:1, padding:12, display:"flex", flexDirection:"column", gap:10 }}>
-            <div style={{ color:C.accent, fontFamily:C.mono, fontSize:10, fontWeight:700, letterSpacing:".1em" }}>TENDENCIAS</div>
-            {[
-              { key:"Temperature", label:"Temperatura", unit:"°C", color:"#ff6b6b" },
-              { key:"Pressure",    label:"Presión",     unit:"bar",color:"#4ecdc4" },
-              { key:"Motor_Speed", label:"Vel. Motor",  unit:"RPM",color:"#95e1d3" },
-            ].map(({ key, label, unit, color }) => (
-              <div key={key} style={{ background:"#0a0f1a", border:"1px solid #1e293b", borderRadius:6, padding:"8px 10px" }}>
-                <div style={{ color:C.dim, fontSize:8, fontFamily:C.mono, marginBottom:4 }}>{label} ({unit})</div>
-                <TrendChart data={trendData[key] || []} color={color} label={key} unit={unit}/>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ── MANUAL SCREEN ── */}
-        {screen === "manual" && (
-          <div style={{ flex:1, padding:12 }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
-              <div style={{ color:C.accent, fontFamily:C.mono, fontSize:10, fontWeight:700, letterSpacing:".1em" }}>CONTROL MANUAL</div>
-              <button onClick={() => setManualMode(p => !p)}
-                style={{ background: manualMode ? `${C.amber}18` : `${C.green}18`, border:`1px solid ${manualMode?C.amber:C.green}`, color:manualMode?C.amber:C.green, padding:"4px 12px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:C.mono }}>
-                {manualMode ? "⚠ MODO MANUAL ACTIVO" : "Activar modo manual"}
-              </button>
-            </div>
-
-            {manualMode && (
-              <>
-                {/* Motor speed slider */}
-                <div style={{ background:"#0d1520", border:"1px solid #1e293b", borderRadius:6, padding:"12px 14px", marginBottom:10 }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
-                    <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>VELOCIDAD MOTOR</span>
-                    <span style={{ color:C.accent, fontFamily:C.mono, fontSize:12, fontWeight:700 }}>{manualMotor} RPM</span>
-                  </div>
-                  <input type="range" min={0} max={2000} step={50} value={manualMotor}
-                    onChange={e => { setManualMotor(Number(e.target.value)); setProcessVals(p => ({...p, Motor_Speed: Number(e.target.value)})); }}
-                    style={{ width:"100%", accentColor:C.accent }}/>
-                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:8, color:C.dim, fontFamily:C.mono, marginTop:2 }}>
-                    <span>0</span><span>2000 RPM</span>
-                  </div>
-                </div>
-
-                {/* Valve slider */}
-                <div style={{ background:"#0d1520", border:"1px solid #1e293b", borderRadius:6, padding:"12px 14px", marginBottom:10 }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
-                    <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>APERTURA VÁLVULA</span>
-                    <span style={{ color:C.accent, fontFamily:C.mono, fontSize:12, fontWeight:700 }}>{manualValve}%</span>
-                  </div>
-                  <input type="range" min={0} max={100} step={1} value={manualValve}
-                    onChange={e => { setManualValve(Number(e.target.value)); setProcessVals(p => ({...p, Valve_Pos: Number(e.target.value)})); }}
-                    style={{ width:"100%", accentColor:C.accent }}/>
-                </div>
-
-                {/* Start / Stop */}
-                <div style={{ display:"flex", gap:10 }}>
-                  <button onClick={() => setRunState(true)}
-                    style={{ flex:1, background:`${C.green}18`, border:`1px solid ${C.green}`, color:C.green, padding:"10px", borderRadius:6, cursor:"pointer", fontFamily:C.mono, fontSize:12, fontWeight:700 }}>
-                    ▶ MARCHA
-                  </button>
-                  <button onClick={() => setRunState(false)}
-                    style={{ flex:1, background:`${C.red}18`, border:`1px solid ${C.red}`, color:C.red, padding:"10px", borderRadius:6, cursor:"pointer", fontFamily:C.mono, fontSize:12, fontWeight:700 }}>
-                    ■ PARO
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        )}
+      {/* ── Botones grandes ── */}
+      <div style={{ display: "flex", background: "#070d18", borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+        {bigBtn("START", C.green, () => hmi("start"), false, running)}
+        {bigBtn("STOP", C.red, () => hmi("stop"), false, !running)}
+        {bigBtn("RESET", C.accent, () => hmi("reset"))}
+        {bigBtn(manual ? "MANUAL ●" : "MANUAL", C.amber, () => setManual(m => !m), manual)}
       </div>
 
-      {/* ── FUNCTION KEYS (bottom) ── */}
-      <div style={{ display:"flex", background:"#0d0d1f", borderTop:"1px solid #2d2d5b", flexShrink:0 }}>
-        {[
-          { id:"main",      label:"F1\nINICIO",    icon:"🏠" },
-          { id:"alarms",    label:`F2\nALARMAS`,   icon: unAcked > 0 ? "⚠" : "🔔" },
-          { id:"setpoints", label:"F3\nSETPOINTS", icon:"⚙" },
-          { id:"trends",    label:"F4\nTENDENCIAS",icon:"📈" },
-          { id:"manual",    label:"F5\nMANUAL",    icon:"🕹" },
-        ].map(({ id, label, icon }) => (
-          <button key={id} onClick={() => setScreen(id)}
-            style={{
-              flex:1, background: screen===id ? "#1e1e4a" : "transparent",
-              border:"none", borderTop: screen===id ? `2px solid ${C.accent}` : "2px solid transparent",
-              color: screen===id ? C.accent : C.dim, padding:"6px 4px", cursor:"pointer",
-              fontFamily:C.mono, fontSize:8, lineHeight:1.4, letterSpacing:".04em",
-              display:"flex", flexDirection:"column", alignItems:"center", gap:2,
-              transition:"all .15s",
-            }}>
-            <span style={{ fontSize:14 }}>{icon}</span>
-            <span style={{ whiteSpace:"pre" }}>{label}</span>
-          </button>
-        ))}
-      </div>
-
-      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}`}</style>
+      <style>{`
+        @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+        @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+      `}</style>
     </div>
   );
 }

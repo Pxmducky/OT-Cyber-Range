@@ -15,6 +15,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { equipmentAction } from "../../utils/otActions";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -259,6 +260,9 @@ export default function PLCInterface({ asset, labData, plant, onBack }) {
     setBusy(true);
     try {
       await apiPost(`/api/plc/${action}`);
+      // Cadena OT: replica la orden sobre el activo PLC para que se propague
+      // a los equipos conectados (p.ej. STOP detiene los motores aguas abajo).
+      try { await equipmentAction({ assetId: asset.id, assetType: asset.type, action: action.toUpperCase() }); } catch { /* backend sin topología */ }
       flash("ok", `CPU ${action.toUpperCase()} ejecutado`);
     } catch (e) { flash("error", e.message || "Error de CPU"); }
     finally { setBusy(false); }
