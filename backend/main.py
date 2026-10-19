@@ -55,6 +55,15 @@ class LoadTopologyRequest(BaseModel):
     assets:      list = []
     connections: list = []
     variables:   list = []
+
+
+class AttackerCommand(BaseModel):
+    command: str
+
+
+class FirewallCommit(BaseModel):
+    rules: list = []
+    mode:  Optional[str] = None
 @app.get("/")
 def root():
     return {
@@ -320,6 +329,49 @@ def get_asset_state(asset_id: str):
     if ap is None:
         raise HTTPException(status_code=404, detail=f"Activo {asset_id} no cargado")
     return ap.to_dict()
+
+
+@app.post("/api/attacker/exec")
+def attacker_exec(request: AttackerCommand):
+    """Ejecuta un comando de la consola Kali simulada."""
+    seg, reason, pivot = plant.attacker.posture()
+    return {
+        "output": plant.attacker_exec(request.command),
+        "posture": {"segmented": seg and not pivot, "reason": reason, "pivot": pivot},
+    }
+
+
+@app.get("/api/attacker/info")
+def attacker_info():
+    seg, reason, pivot = plant.attacker.posture()
+    return {"ip": plant.attacker.ip, "zone": plant.attacker.zone,
+            "posture": {"segmented": seg and not pivot, "reason": reason, "pivot": pivot}}
+
+
+@app.get("/api/firewall/{asset_id}")
+def get_firewall(asset_id: str):
+    """Estado del firewall: zonas, rulebase, log de tráfico y contadores."""
+    fw = plant.firewalls.get(asset_id)
+    if fw is None:
+        raise HTTPException(status_code=404, detail=f"Firewall {asset_id} no cargado")
+    mode = plant.assets_runtime[asset_id].state.get("mode", "ENFORCING")
+    return fw.to_dict(mode)
+
+
+@app.post("/api/firewall/{asset_id}/commit")
+def commit_firewall(asset_id: str, request: FirewallCommit):
+    """Aplica (commit) un nuevo rulebase y/o modo al firewall."""
+    fw = plant.firewalls.get(asset_id)
+    if fw is None:
+        raise HTTPException(status_code=404, detail=f"Firewall {asset_id} no cargado")
+    if request.rules:
+        fw.set_rules(request.rules)
+    if request.mode in ("ENFORCING", "BYPASS"):
+        plant.assets_runtime[asset_id].state["mode"] = request.mode
+    plant.add_event("FW_COMMIT", "INFO", asset_id,
+                    f"Commit de política en {asset_id} ({len(fw.rules)} reglas)")
+    mode = plant.assets_runtime[asset_id].state.get("mode", "ENFORCING")
+    return fw.to_dict(mode)
 
 
 # =====================================================================

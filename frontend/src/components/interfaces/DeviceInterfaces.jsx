@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
-import { equipmentAction, fetchAssetState, fetchPlant, plcDownloadProgram, plcRunProgram, protoPort, SAFE_PLC_PROGRAM } from "../../utils/otActions";
+import { equipmentAction, fetchAssetState, fetchPlant, fetchPlcProgram, plcDownloadProgram, plcRunProgram, plcStopProgram, ackAlarm, protoPort, protoSvc, SAFE_PLC_PROGRAM, MALICIOUS_PLC_PROGRAM } from "../../utils/otActions";
 
 const C = { bg:"#05080f", bg2:"#08101a", bg3:"#0d1520", border:"#1e293b", text:"#e2e8f0", dim:"#4b5563", mono:"'Consolas','Courier New',monospace" };
 const statusColor = s => ({ ONLINE:"#22c55e", OFFLINE:"#4b5563", WARNING:"#f59e0b", COMPROMISED:"#ef4444" })[s?.toUpperCase()] ?? "#22c55e";
@@ -640,61 +640,93 @@ export function WorkstationInterface({ asset, labData, onBack }) {
 /* ── App: Programación de PLC (TIA / STEP 7 / Studio 5000) ── */
 function ProgrammingApp({ appName, labData }) {
   const plcs = (labData?.assets || []).filter(a => /plc|controller|rtu|dcs/i.test(a.type || ""));
-  const [sel, setSel]   = useState(plcs[0]?.id || "");
-  const [online, setOnline] = useState(false);
-  const [log, setLog]   = useState([]);
-  const [busy, setBusy] = useState(false);
+  const [sel, setSel]       = useState(plcs[0]?.id || "");
+  const [source, setSource] = useState(SAFE_PLC_PROGRAM);
+  const [log, setLog]       = useState([]);
+  const [busy, setBusy]     = useState(false);
+  const [cpu, setCpu]       = useState(null);     // cpu_state del PLC (per-asset)
+  const [prog, setProg]     = useState(null);     // estado del programa (global)
   const selAsset = plcs.find(p => p.id === sel);
-  const add = (t) => setLog(l => [...l.slice(-40), `${new Date().toLocaleTimeString()}  ${t}`]);
+  const add = (t) => setLog(l => [...l.slice(-60), `${new Date().toLocaleTimeString()}  ${t}`]);
+  const isRockwell = /studio|rslogix|rockwell|allen/i.test(appName);
+
+  // poll del estado real del PLC seleccionado + del programa
+  useEffect(() => {
+    let t, cancel = false;
+    const poll = async () => {
+      try { const d = await fetchAssetState(sel); if (!cancel) setCpu(d?.state?.cpu_state ?? null); } catch {}
+      try { const p = await fetchPlcProgram();   if (!cancel) setProg(p); } catch {}
+      t = setTimeout(poll, 1000);
+    };
+    if (sel) poll();
+    return () => { cancel = true; clearTimeout(t); };
+  }, [sel]);
 
   const act = async (fn, label) => {
     setBusy(true);
-    try { await fn(); add(label); }
-    catch (e) { add("⚠ " + (e.message || "error")); }
+    try { await fn(); add(label); } catch (e) { add("⚠ " + (e.message || "error")); }
     finally { setBusy(false); }
   };
 
+  const online = cpu === "RUN";
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-      <div style={{ color:"#f59e0b", fontFamily:C.mono, fontSize:12, fontWeight:700 }}>{appName} — Proyecto OT</div>
+      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <div style={{ color:"#f59e0b", fontFamily:C.mono, fontSize:12, fontWeight:700 }}>{appName} — Proyecto OT</div>
+        <div style={{ flex:1 }}/>
+        <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>{isRockwell ? "Ladder/ST" : "SCL/Structured Text"}</span>
+      </div>
+
       {plcs.length === 0 ? (
-        <div style={{ color:C.dim, fontSize:10, fontFamily:C.mono }}>No hay PLCs en la topología importada. Importa el Excel para ver dispositivos.</div>
+        <div style={{ color:C.dim, fontSize:10, fontFamily:C.mono }}>No hay PLCs en la topología. Importa el Excel.</div>
       ) : (
         <>
           <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-            <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>DISPOSITIVO:</span>
-            <select value={sel} onChange={e => { setSel(e.target.value); setOnline(false); }}
+            <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>CPU:</span>
+            <select value={sel} onChange={e => setSel(e.target.value)}
               style={{ background:C.bg2, border:`1px solid ${C.border}`, color:C.text, padding:"5px 8px", borderRadius:4, fontSize:10, fontFamily:C.mono }}>
               {plcs.map(p => <option key={p.id} value={p.id}>{p.id} — {p.type}</option>)}
             </select>
-            <span style={{ color: online ? "#22c55e" : C.dim, fontSize:9, fontFamily:C.mono, border:`1px solid ${online?"#22c55e":C.border}`, borderRadius:4, padding:"2px 8px" }}>
-              {online ? "● ONLINE" : "○ OFFLINE"}
+            <span style={{ color: online ? "#22c55e" : "#f59e0b", fontSize:9, fontFamily:C.mono, border:`1px solid ${online?"#22c55e":"#f59e0b"}`, borderRadius:4, padding:"2px 8px" }}>
+              CPU {cpu || "—"}
             </span>
+            {prog && (
+              <span style={{ color: prog.running ? "#22c55e" : C.dim, fontSize:9, fontFamily:C.mono }}>
+                PROG {prog.status}{prog.running ? ` · scan #${prog.execution_count}` : ""}
+              </span>
+            )}
           </div>
 
+          {/* editor del programa */}
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>PLANTILLA:</span>
+            <button onClick={() => setSource(SAFE_PLC_PROGRAM)} style={btn("#22c55e", false)}>SEGURO</button>
+            <button onClick={() => setSource(MALICIOUS_PLC_PROGRAM)} style={btn("#ef4444", false)}>MALICIOSO</button>
+            <button disabled={busy} onClick={() => act(async () => { const p = await fetchPlcProgram(); if (p?.source) setSource(p.source); }, "Programa leído del PLC (upload)")} style={btn("#818cf8", busy)}>LEER DEL PLC</button>
+          </div>
+          <textarea value={source} onChange={e => setSource(e.target.value)} spellCheck={false}
+            style={{ background:"#02060c", border:`1px solid ${C.border}`, color:"#9fe6b0", padding:"10px 12px", borderRadius:6, fontFamily:C.mono, fontSize:11, lineHeight:1.5, height:150, resize:"vertical", outline:"none", whiteSpace:"pre" }}/>
+
+          {/* acciones reales */}
           <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-            <button disabled={busy} onClick={() => act(async () => { await equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "RUN" }); setOnline(true); }, `Conectado ONLINE a ${sel}`)}
-              style={btn("#22d3ee", busy)}>IR ONLINE</button>
-            <button disabled={busy || !online} onClick={() => act(() => equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "STOP" }), `⏹ CPU STOP enviado a ${sel} (cascada a equipos conectados)`)}
-              style={btn("#ef4444", busy || !online)}>STOP CPU</button>
-            <button disabled={busy || !online} onClick={() => act(() => equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "RUN" }), `▶ CPU RUN enviado a ${sel}`)}
-              style={btn("#22c55e", busy || !online)}>RUN CPU</button>
-            <button disabled={busy || !online} onClick={() => act(async () => {
+            <button disabled={busy} onClick={() => act(() => equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "RUN" }), `CPU RUN -> ${sel}`)} style={btn("#22c55e", busy)}>RUN CPU</button>
+            <button disabled={busy} onClick={() => act(() => equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "STOP" }), `⏹ CPU STOP -> ${sel} (cascada a equipos conectados)`)} style={btn("#ef4444", busy)}>STOP CPU</button>
+            <button disabled={busy} onClick={() => act(async () => {
                 await equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "PROGRAM" });
-                const r = await plcDownloadProgram(SAFE_PLC_PROGRAM);
+                await plcDownloadProgram(source);
                 await plcRunProgram();
                 await equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "REMOTE" });
-                return r;
-              }, `⬇ Programa seguro descargado y en ejecución en ${sel}`)}
-              style={btn("#818cf8", busy || !online)}>DESCARGAR PROGRAMA</button>
+              }, `⬇ Programa descargado y en RUN en ${sel}`)} style={btn("#818cf8", busy)}>DESCARGAR + RUN</button>
+            <button disabled={busy} onClick={() => act(() => plcStopProgram(), "Programa detenido")} style={btn("#f59e0b", busy)}>DETENER PROGRAMA</button>
           </div>
           <div style={{ color:C.dim, fontSize:8, fontFamily:C.mono }}>
-            STOP detiene realmente el PLC y los equipos que controla (se pintan rojo/naranja). DESCARGAR carga un programa ST válido que mueve el proceso real.
+            El validador del backend rechaza código inválido. La plantilla MALICIOSA fuerza sobre-velocidad + válvula 100% + alarma (para escenarios de ataque).
           </div>
 
-          <div style={{ background:"#02060c", border:`1px solid ${C.border}`, borderRadius:6, padding:"10px 12px", height:150, overflow:"auto", fontFamily:C.mono, fontSize:10 }}>
+          <div style={{ background:"#02060c", border:`1px solid ${C.border}`, borderRadius:6, padding:"10px 12px", height:120, overflow:"auto", fontFamily:C.mono, fontSize:10 }}>
             {log.length === 0 ? <span style={{ color:C.dim }}>Consola del proyecto…</span> :
-              log.map((l,i) => <div key={i} style={{ color:"#9fb4c9" }}>{l}</div>)}
+              log.slice().reverse().map((l,i) => <div key={i} style={{ color: l.includes("⚠") ? "#ef4444" : "#9fb4c9" }}>{l}</div>)}
           </div>
         </>
       )}
@@ -706,39 +738,57 @@ function ProgrammingApp({ appName, labData }) {
 function NmapApp({ appName, asset, labData }) {
   const [out, setOut] = useState([]);
   const [scanning, setScanning] = useState(false);
+  const [mode, setMode] = useState("sV");            // sn | sV | ports
+  const [target, setTarget] = useState("");
+  const hosts = (labData?.assets || []).filter(a => a.ip);
 
-  const scan = () => {
-    setScanning(true); setOut([`Starting Nmap 7.94 ( desde ${asset.ip || asset.id} )`]);
-    const hosts = (labData?.assets || []).filter(a => a.ip);
-    let i = 0;
-    const lines = [];
-    hosts.forEach(h => {
-      const protos = Array.isArray(h.protocols) ? h.protocols : String(h.protocols || "").split(/[;,]/).map(x=>x.trim()).filter(Boolean);
-      const ports = protos.map(p => ({ p, port: protoPort(p) })).filter(x => x.port);
-      lines.push(`\nNmap scan report for ${h.id} (${h.ip})`);
-      lines.push(`Host is up.  ${h.type || ""}`);
-      if (ports.length === 0) lines.push(`  (sin puertos OT conocidos)`);
-      ports.forEach(({ p, port }) => lines.push(`  ${String(port).padEnd(7)} open   ${p}`));
+  const run = () => {
+    const subnet = target.trim() || "red OT importada";
+    const flag = mode === "sn" ? "-sn" : mode === "ports" ? "-p-" : "-sV";
+    const sel = target.trim()
+      ? hosts.filter(h => (h.ip || "").includes(target.trim()) || h.id === target.trim())
+      : hosts;
+    const lines = [`$ nmap ${flag} ${subnet}`, `Starting Nmap 7.94 desde ${asset.ip || asset.id}`, ""];
+    sel.forEach(h => {
+      const lat = (Math.random() * 8 + 0.3).toFixed(1);
+      lines.push(`Nmap scan report for ${h.id} (${h.ip})`);
+      lines.push(`Host is up (0.00${lat}s latency).  ${h.type || ""}`);
+      if (mode !== "sn") {
+        const protos = Array.isArray(h.protocols) ? h.protocols : String(h.protocols || "").split(/[;,]/).map(x=>x.trim()).filter(Boolean);
+        const ports = protos.map(p => ({ p, port: protoPort(p) })).filter(x => x.port);
+        if (ports.length === 0) lines.push("  (sin puertos OT conocidos)");
+        else {
+          lines.push("  PORT      STATE  SERVICE" + (mode === "sV" ? "        VERSION" : ""));
+          ports.forEach(({ p, port }) => lines.push(
+            `  ${String(port + "/tcp").padEnd(9)} open   ${p.toLowerCase().padEnd(7)}` + (mode === "sV" ? `  ${protoSvc(p)}` : "")
+          ));
+        }
+      }
+      lines.push("");
     });
-    lines.push(`\nNmap done: ${hosts.length} IP addresses scanned`);
-    // stream con efecto máquina de escribir
+    lines.push(`Nmap done: ${sel.length} IP address(es) scanned`);
+
+    setScanning(true); setOut([]);
+    let i = 0;
     const iv = setInterval(() => {
       if (i >= lines.length) { clearInterval(iv); setScanning(false); return; }
       setOut(o => [...o, lines[i]]); i++;
-    }, 90);
+    }, 70);
   };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-        <div style={{ color:"#f59e0b", fontFamily:C.mono, fontSize:12, fontWeight:700 }}>{appName}</div>
-        <div style={{ flex:1 }}/>
-        <button onClick={scan} disabled={scanning} style={btn("#22c55e", scanning)}>
-          {scanning ? "ESCANEANDO…" : "nmap -sV <red OT>"}
-        </button>
+      <div style={{ color:"#f59e0b", fontFamily:C.mono, fontSize:12, fontWeight:700 }}>{appName}</div>
+      <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+        {[["sn","Ping (-sn)"],["sV","Versión (-sV)"],["ports","Puertos (-p-)"]].map(([m,lbl]) => (
+          <button key={m} onClick={() => setMode(m)} style={{ ...btn(mode===m ? "#22d3ee" : "#4b5563", false), opacity: mode===m?1:.7 }}>{lbl}</button>
+        ))}
+        <input value={target} onChange={e=>setTarget(e.target.value)} placeholder="objetivo (IP/ID, vacío = toda la red)"
+          style={{ background:C.bg2, border:`1px solid ${C.border}`, color:C.text, padding:"6px 10px", borderRadius:4, fontSize:10, fontFamily:C.mono, flex:1, minWidth:160, outline:"none" }}/>
+        <button onClick={run} disabled={scanning} style={btn("#22c55e", scanning)}>{scanning ? "ESCANEANDO…" : "EJECUTAR"}</button>
       </div>
       <div style={{ background:"#02060c", border:`1px solid ${C.border}`, borderRadius:6, padding:"10px 12px", height:300, overflow:"auto", fontFamily:C.mono, fontSize:10, whiteSpace:"pre-wrap", color:"#9fe6b0" }}>
-        {out.length === 0 ? <span style={{ color:C.dim }}>Pulsa escanear para enumerar la planta importada…</span> : out.join("\n")}
+        {out.length === 0 ? <span style={{ color:C.dim }}>Elige modo y ejecuta para enumerar la planta importada…</span> : out.join("\n")}
       </div>
     </div>
   );
@@ -748,9 +798,12 @@ function NmapApp({ appName, asset, labData }) {
 function WiresharkApp({ labData }) {
   const [pkts, setPkts] = useState([]);
   const [running, setRunning] = useState(false);
+  const [filter, setFilter] = useState("");
+  const [sel, setSel] = useState(null);
   const ivRef = useRef(null);
   const conns = labData?.connections || [];
   const ipOf = (id) => (labData?.assets || []).find(a => a.id === id)?.ip || id;
+  const PCOL = { S7comm:"#f59e0b", "OPC-UA":"#22d3ee", OPCUA:"#22d3ee", Modbus:"#818cf8", PROFINET:"#22c55e", HTTP:"#9fb4c9", HTTPS:"#9fb4c9" };
 
   useEffect(() => {
     if (!running) { clearInterval(ivRef.current); return; }
@@ -758,79 +811,115 @@ function WiresharkApp({ labData }) {
       if (conns.length === 0) return;
       const c = conns[Math.floor(Math.random() * conns.length)];
       const proto = (c.protocol || "TCP").split(/[;,]/)[0].trim();
-      setPkts(p => [...p.slice(-120), {
+      setPkts(p => [...p.slice(-200), {
+        n: (p[p.length-1]?.n || 0) + 1,
         t: (performance.now()/1000).toFixed(3),
         src: ipOf(c.sourceId), dst: ipOf(c.targetId),
         proto, port: protoPort(proto) || "—", len: 60 + Math.floor(Math.random()*200),
+        info: `${proto} ${c.sourceId} → ${c.targetId}`,
       }]);
-    }, 350);
+    }, 300);
     return () => clearInterval(ivRef.current);
   }, [running]);
 
+  const f = filter.trim().toLowerCase();
+  const shown = f ? pkts.filter(p => (p.proto+" "+p.src+" "+p.dst).toLowerCase().includes(f)) : pkts;
+  const counts = pkts.reduce((m,p) => (m[p.proto]=(m[p.proto]||0)+1, m), {});
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
         <div style={{ color:"#f59e0b", fontFamily:C.mono, fontSize:12, fontWeight:700 }}>Wireshark 4.x</div>
         <div style={{ flex:1 }}/>
-        <button onClick={() => setRunning(r => !r)} style={btn(running ? "#ef4444" : "#22c55e", false)}>
-          {running ? "■ DETENER" : "● CAPTURAR"}
-        </button>
-        <button onClick={() => setPkts([])} style={btn("#4b5563", false)}>LIMPIAR</button>
+        <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="filtro (s7comm, 172.16…)"
+          style={{ background:C.bg2, border:`1px solid ${C.border}`, color:C.text, padding:"5px 10px", borderRadius:4, fontSize:10, fontFamily:C.mono, width:170, outline:"none" }}/>
+        <button onClick={() => setRunning(r => !r)} style={btn(running ? "#ef4444" : "#22c55e", false)}>{running ? "■ DETENER" : "● CAPTURAR"}</button>
+        <button onClick={() => { setPkts([]); setSel(null); }} style={btn("#4b5563", false)}>LIMPIAR</button>
       </div>
-      <div style={{ background:"#02060c", border:`1px solid ${C.border}`, borderRadius:6, padding:"6px 8px", height:300, overflow:"auto", fontFamily:C.mono, fontSize:9 }}>
+
+      <div style={{ display:"flex", gap:10, color:C.dim, fontSize:9, fontFamily:C.mono, flexWrap:"wrap" }}>
+        <span>{pkts.length} paquetes</span>
+        {Object.entries(counts).map(([p,n]) => <span key={p} style={{ color: PCOL[p]||C.dim }}>{p}: {n}</span>)}
+      </div>
+
+      <div style={{ background:"#02060c", border:`1px solid ${C.border}`, borderRadius:6, padding:"6px 8px", height:230, overflow:"auto", fontFamily:C.mono, fontSize:9 }}>
         <div style={{ display:"flex", gap:8, color:C.dim, borderBottom:`1px solid ${C.border}`, paddingBottom:3, marginBottom:3 }}>
-          <span style={{ minWidth:70 }}>Time</span><span style={{ minWidth:110 }}>Source</span><span style={{ minWidth:110 }}>Destination</span><span style={{ minWidth:60 }}>Proto</span><span style={{ minWidth:46 }}>Port</span><span>Len</span>
+          <span style={{ minWidth:34 }}>No.</span><span style={{ minWidth:64 }}>Time</span><span style={{ minWidth:104 }}>Source</span><span style={{ minWidth:104 }}>Destination</span><span style={{ minWidth:58 }}>Proto</span><span style={{ minWidth:40 }}>Port</span><span>Len</span>
         </div>
-        {pkts.length === 0 ? <span style={{ color:C.dim }}>Sin paquetes. Pulsa CAPTURAR.</span> :
-          pkts.slice().reverse().map((p,i) => (
-            <div key={i} style={{ display:"flex", gap:8 }}>
-              <span style={{ color:C.dim, minWidth:70 }}>{p.t}</span>
-              <span style={{ color:"#22d3ee", minWidth:110 }}>{p.src}</span>
-              <span style={{ color:"#818cf8", minWidth:110 }}>{p.dst}</span>
-              <span style={{ color:"#f59e0b", minWidth:60 }}>{p.proto}</span>
-              <span style={{ color:C.dim, minWidth:46 }}>{p.port}</span>
+        {shown.length === 0 ? <span style={{ color:C.dim }}>Sin paquetes. Pulsa CAPTURAR.</span> :
+          shown.slice().reverse().map((p) => (
+            <div key={p.n} onClick={() => setSel(p)} style={{ display:"flex", gap:8, cursor:"pointer", background: sel?.n===p.n ? "#0d1520" : "transparent" }}>
+              <span style={{ color:C.dim, minWidth:34 }}>{p.n}</span>
+              <span style={{ color:C.dim, minWidth:64 }}>{p.t}</span>
+              <span style={{ color:"#22d3ee", minWidth:104 }}>{p.src}</span>
+              <span style={{ color:"#818cf8", minWidth:104 }}>{p.dst}</span>
+              <span style={{ color: PCOL[p.proto]||"#f59e0b", minWidth:58 }}>{p.proto}</span>
+              <span style={{ color:C.dim, minWidth:40 }}>{p.port}</span>
               <span style={{ color:"#9fb4c9" }}>{p.len}</span>
             </div>
           ))}
       </div>
+
+      {sel && (
+        <div style={{ background:C.bg3, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", fontFamily:C.mono, fontSize:10, color:"#9fb4c9" }}>
+          <div style={{ color:C.dim, fontSize:8, marginBottom:4 }}>FRAME {sel.n}</div>
+          {sel.src} → {sel.dst} · {sel.proto}/{sel.port} · {sel.len} bytes · {sel.info}
+        </div>
+      )}
     </div>
   );
 }
 
-/* ── App: WinCC (tags en vivo del proceso) ── */
+/* ── App: WinCC (tags + alarmas en vivo del proceso) ── */
 function WinccApp() {
   const [proc, setProc] = useState(null);
+  const [alarms, setAlarms] = useState([]);
   useEffect(() => {
     let t, cancel=false;
     const poll = async () => {
-      try { const d = await fetchPlant(); if(!cancel) setProc(d.process); } catch {}
+      try { const d = await fetchPlant(); if(!cancel){ setProc(d.process); setAlarms(d.alarms?.active || []); } } catch {}
       t = setTimeout(poll, 1000);
     };
     poll();
     return () => { cancel=true; clearTimeout(t); };
   }, []);
   const tags = [
-    ["TEMPERATURE", proc?.temperature, "°C"], ["PRESSURE", proc?.pressure, "bar"],
-    ["MOTOR_SPEED", proc?.motor_speed, "RPM"], ["VALVE_POSITION", proc?.valve_position, "%"],
-    ["PRODUCTION_RATE", proc?.production_rate, "%"],
+    ["TEMPERATURE", proc?.temperature, "°C", 60, 78], ["PRESSURE", proc?.pressure, "bar", 3.0, 4.3],
+    ["MOTOR_SPEED", proc?.motor_speed, "RPM", 800, 1500], ["VALVE_POSITION", proc?.valve_position, "%", 10, 90],
+    ["PRODUCTION_RATE", proc?.production_rate, "%", 0, 100],
   ];
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
       <div style={{ color:"#f59e0b", fontFamily:C.mono, fontSize:12, fontWeight:700 }}>WinCC Explorer — Tag Browser</div>
       <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:C.mono, fontSize:11 }}>
         <thead><tr style={{ color:C.dim }}>{["Tag","Valor","Unidad","Calidad"].map(h => <th key={h} style={{ textAlign:"left", padding:"6px 10px", borderBottom:`1px solid ${C.border}`, fontSize:9 }}>{h}</th>)}</tr></thead>
         <tbody>
-          {tags.map(([t,v,u]) => (
-            <tr key={t} style={{ borderBottom:`1px solid ${C.border}22` }}>
-              <td style={{ padding:"6px 10px", color:"#818cf8" }}>{t}</td>
-              <td style={{ padding:"6px 10px", color:"#22c55e", fontWeight:700 }}>{v==null?"—":Number(v).toFixed(2)}</td>
-              <td style={{ padding:"6px 10px", color:C.dim }}>{u}</td>
-              <td style={{ padding:"6px 10px", color: proc ? "#22c55e" : C.dim }}>{proc ? "GOOD" : "—"}</td>
-            </tr>
-          ))}
+          {tags.map(([t,v,u,lo,hi]) => {
+            const ok = v!=null && v>=lo && v<=hi;
+            return (
+              <tr key={t} style={{ borderBottom:`1px solid ${C.border}22` }}>
+                <td style={{ padding:"6px 10px", color:"#818cf8" }}>{t}</td>
+                <td style={{ padding:"6px 10px", color: ok ? "#22c55e" : "#f59e0b", fontWeight:700 }}>{v==null?"—":Number(v).toFixed(2)}</td>
+                <td style={{ padding:"6px 10px", color:C.dim }}>{u}</td>
+                <td style={{ padding:"6px 10px", color: proc ? (ok?"#22c55e":"#f59e0b") : C.dim }}>{proc ? (ok?"GOOD":"OUT") : "—"}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
-      <div style={{ color:C.dim, fontSize:8, fontFamily:C.mono }}>Valores leídos en vivo del proceso del backend.</div>
+
+      <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, letterSpacing:".1em" }}>
+        ALARMAS ACTIVAS — {alarms.length || "ninguna"}
+      </div>
+      {alarms.map(a => (
+        <div key={a.alarm_id} style={{ display:"flex", alignItems:"center", gap:8, background:C.bg3, border:`1px solid ${C.border}`, borderRadius:5, padding:"7px 12px" }}>
+          <div style={{ width:8, height:8, borderRadius:"50%", background: (a.severity||"").toUpperCase()==="CRITICAL" ? "#ef4444" : "#f59e0b" }}/>
+          <span style={{ color:"#9fb4c9", fontFamily:C.mono, fontSize:10, flex:1 }}>{a.severity} · {a.message}</span>
+          {!a.acknowledged && (
+            <button onClick={() => ackAlarm(a.alarm_id)} style={btn("#22d3ee", false)}>ACK</button>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

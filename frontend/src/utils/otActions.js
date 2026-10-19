@@ -146,3 +146,45 @@ IF PRESSURE > 4.2 THEN
   VALVE_POSITION := 70;
 END_IF
 END_PROGRAM`;
+
+/* ── Más helpers Estación de Ingeniería ── */
+export async function fetchPlcProgram() {
+  const res = await fetch(`${API_URL}/api/plc/program`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+export async function plcStopProgram() {
+  const res = await fetch(`${API_URL}/api/plc/program/stop`, { method: "POST" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+export async function ackAlarm(alarmId) {
+  const res = await fetch(`${API_URL}/api/alarms/acknowledge`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ alarm_id: alarmId }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+/* Programa ST "malicioso" de demostración (válido para el validador) */
+export const MALICIOUS_PLC_PROGRAM = `PROGRAM MAIN
+NETWORK 1
+IF TEMPERATURE > 0 THEN
+  MOTOR_SPEED := 1800;
+  VALVE_POSITION := 100;
+  ALARM := TRUE;
+END_IF
+END_PROGRAM`;
+
+/* Servicio típico por protocolo (para nmap -sV) */
+export const PROTO_SVC = {
+  S7COMM:"Siemens S7 (iso-tsap)", S7:"Siemens S7 (iso-tsap)", "OPC-UA":"OPC-UA server",
+  OPCUA:"OPC-UA server", MODBUS:"Modbus TCP", "ETHERNET/IP":"EtherNet/IP",
+  ETHERNETIP:"EtherNet/IP", DNP3:"DNP3", PROFINET:"PROFINET-IO", HTTP:"HTTP (web HMI)",
+  HTTPS:"ssl/http", SSH:"OpenSSH 8.4", RDP:"ms-wbt-server", SMB:"microsoft-ds",
+  FTP:"vsftpd", SNMP:"net-snmp", MQTT:"mosquitto",
+};
+export function protoSvc(proto = "") {
+  const k = proto.toUpperCase().replace(/\s+/g, "");
+  return PROTO_SVC[k] || PROTO_SVC[proto.toUpperCase()] || "unknown";
+}

@@ -6,6 +6,7 @@
 
 import PLCInterface         from "./interfaces/PLCInterface";
 import HMIInterface         from "./interfaces/HMIInterface";
+import FirewallInterface    from "./interfaces/FirewallInterface";
 import {
   SensorInterface,
   DriveInterface,
@@ -63,8 +64,10 @@ function classifyType(type = "") {
   if (t.includes("switch") || t.includes("conmutador"))
     return "NETWORK";
 
-  if (t.includes("firewall") || t.includes("mguard") || t.includes("security"))
-    return "NETWORK";
+  if (t.includes("firewall") || t.includes("mguard") || t.includes("palo alto") ||
+      t.includes("paloalto") || t.includes("pan-os") || t.includes("fortigate") ||
+      t.includes("security appliance"))
+    return "FIREWALL";
 
   if (t.includes("ewon") || t.includes("gateway") || t.includes("router") || t.includes("modem"))
     return "NETWORK";
@@ -117,6 +120,9 @@ export default function EquipmentInterface({ asset, labData, plant, events = [],
     case "DRIVE":
     case "VALVE":
       return <DriveInterface {...commonProps}/>;
+
+    case "FIREWALL":
+      return <FirewallInterface {...commonProps}/>;
 
     case "NETWORK":
       return <NetworkInterface {...commonProps}/>;

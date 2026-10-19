@@ -57,6 +57,8 @@ END_IF"""
 from simulation.plc import PLC
 from simulation.process import ProcessState
 from simulation.asset_models import AssetProcess
+from simulation.attacker import AttackerConsole
+from simulation.firewall import Firewall, app_of
 from simulation.events import OTEvent
 from simulation.plc_program import PLCProgram
 from simulation.plc_runtime import PLCRuntime
@@ -254,6 +256,9 @@ class Plant:
         # Proceso individual por activo (poblado por load_topology desde Excel).
         self.assets_runtime = {}   # asset_id -> AssetProcess
         self.asset_conns    = []   # [{sourceId, targetId, protocol, port}]
+        self.attacker       = AttackerConsole(self)
+        self.firewalls      = {}   # asset_id -> Firewall
+        self._fw_tick       = 0
 
         self.add_event(
             event_type="SYSTEM_START",
@@ -385,6 +390,17 @@ class Plant:
                     EquipmentStatus.ONLINE
                 )
 
+        # Tráfico legítimo de ejemplo hacia los logs del firewall.
+        self._fw_tick += 1
+        if self.firewalls and self.asset_conns and self._fw_tick % 2 == 0:
+            import random as _r0
+            c = _r0.choice(self.asset_conns)
+            s_id, d_id = c.get("sourceId"), c.get("targetId")
+            if s_id and d_id:
+                proto = (c.get("protocol") or "TCP").split(",")[0].strip()
+                self.firewall_eval(self.zone_of(s_id), self.zone_of(d_id),
+                                   app_of(proto), s_id, d_id)
+
         # Avanzar el proceso individual de cada activo.
         import random as _rnd
         _r = lambda a, b: _rnd.uniform(a, b)
@@ -433,6 +449,10 @@ class Plant:
                 continue
             self.assets_runtime[aid] = AssetProcess(a, variables or [])
         self.asset_conns = connections or []
+        self.firewalls = {
+            aid: Firewall(aid, ap.name)
+            for aid, ap in self.assets_runtime.items() if ap.category == "firewall"
+        }
         self.add_event(
             "TOPOLOGY_LOADED", "INFO", "OT-CYBER-RANGE",
             f"Inventario cargado: {len(self.assets_runtime)} activos, "
@@ -448,6 +468,42 @@ class Plant:
             elif c.get("targetId") == asset_id and c.get("sourceId"):
                 out.add(c["sourceId"])
         return out
+
+    # =========================================================
+    # ZONAS Y FIREWALL
+    # =========================================================
+    _OT_CATS = {"plc", "motor", "pump", "valve", "sensor", "machine", "hmi", "scada"}
+
+    def zone_of(self, asset_id):
+        ap = self.assets_runtime.get(asset_id)
+        if ap is None:
+            return "IT"
+        if ap.category in self._OT_CATS:                     return "OT"
+        if ap.category in ("historian", "mes", "server", "gateway"): return "DMZ"
+        if ap.category == "workstation":                     return "IT"
+        return "OT"
+
+    def perimeter_firewall(self):
+        for aid in self.firewalls:
+            return aid
+        return None
+
+    def firewall_eval(self, from_zone, to_zone, app, src="", dst="", do_log=True):
+        if from_zone == to_zone:
+            return ("allow", "intrazona")
+        fid = self.perimeter_firewall()
+        if not fid:
+            return ("allow", "sin-firewall")
+        fw = self.firewalls[fid]
+        ap = self.assets_runtime.get(fid)
+        mode = ap.state.get("mode", "ENFORCING") if ap else "ENFORCING"
+        if mode in ("BYPASS", "DISABLED"):
+            if do_log: fw.log(from_zone, to_zone, src, dst, app, "allow", "BYPASS")
+            return ("allow", "BYPASS")
+        action, rule = fw.evaluate(from_zone, to_zone, app)
+        if do_log:
+            fw.log(from_zone, to_zone, src, dst, app, action, rule)
+        return (action, rule)
 
     def _downstream(self, asset_id, max_depth=6):
         """Activos alcanzables siguiendo las conexiones dirigidas source->target."""
@@ -495,6 +551,10 @@ class Plant:
             if not changed:
                 break
         return health
+
+    def attacker_exec(self, command):
+        """Ejecuta un comando de la consola Kali contra la planta."""
+        return self.attacker.execute(command)
 
     def apply_equipment_action(
         self, asset_id, asset_type="", action="", value=None,
@@ -1592,6 +1652,11 @@ class Plant:
 
             "assets":
                 {aid: ap.to_dict() for aid, ap in self.assets_runtime.items()},
+
+            "firewalls":
+                {aid: fw.to_dict(
+                    self.assets_runtime[aid].state.get("mode", "ENFORCING")
+                 ) for aid, fw in self.firewalls.items()},
 
             "health":
                 self._compute_health(),

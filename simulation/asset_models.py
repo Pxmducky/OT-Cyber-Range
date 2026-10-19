@@ -63,6 +63,16 @@ class AssetProcess:
         self.status   = "ONLINE"
         self.activity = "normal"
         self.criticality = self._criticality(asset)
+        # metadatos para enumeración del atacante (nmap/plcscan)
+        self.ip        = asset.get("ip") or asset.get("ipAddress") or ""
+        self.vendor    = asset.get("vendor") or asset.get("manufacturer") or ""
+        self.model     = asset.get("model") or ""
+        self.firmware  = asset.get("firmware") or ""
+        self.vlan      = asset.get("vlan") or ""
+        p = asset.get("protocols")
+        if isinstance(p, str):
+            p = [x.strip() for x in p.replace(";", ",").split(",") if x.strip()]
+        self.protocols = p or []
         self.state    = self._initial_state()
         self._seed_from_variables(variables or [])
 
@@ -396,5 +406,6 @@ class AssetProcess:
             "id": self.id, "name": self.name, "type": self.type,
             "category": self.category, "status": self.status,
             "activity": self.activity, "criticality": self.criticality,
-            "health": self.health(), "state": self.state,
+            "health": self.health(), "ip": self.ip,
+            "protocols": self.protocols, "state": self.state,
         }
