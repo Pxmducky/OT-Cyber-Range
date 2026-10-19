@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 
 import "./App.css";
-
+import AssetInventory from "./components/AssetInventory";
 import ExcelImporter from "./components/ExcelImporter";
 import DynamicPlant from "./components/DynamicPlant";
 import PurduePage from "./components/PurduePage";
@@ -797,12 +797,16 @@ function App() {
 
         {activePage === "purdue" && (
           <PurduePage
-            equipment={equipment}
+            assets={importedAssets.length > 0 ? importedAssets : equipment}
+            connections={importedConnections}
           />
         )}
 
         {activePage === "inventory" && (
-          <InventoryPage />
+          <AssetInventory
+            assets={importedAssets.length > 0 ? importedAssets : equipment}
+            connections={importedConnections}
+          />
         )}
 
         {activePage === "siem" && (

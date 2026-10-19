@@ -1,133 +1,108 @@
-/**
- * EquipmentInterface.jsx
- * Router principal de interfaces de equipo.
- * Despacha al componente correcto según asset.type del Excel.
- */
+"""
+firewall.py — Motor de firewall estilo Palo Alto (PAN-OS) del OT Cyber Range.
 
-import PLCInterface         from "./interfaces/PLCInterface";
-import HMIInterface         from "./interfaces/HMIInterface";
-import FirewallInterface    from "./interfaces/FirewallInterface";
-import {
-  SensorInterface,
-  DriveInterface,
-  NetworkInterface,
-  ServerInterface,
-  WorkstationInterface,
-  GenericInterface,
-} from "./interfaces/DeviceInterfaces";
+Un firewall real: zonas de seguridad, un rulebase ordenado (primera coincidencia)
+basado en aplicaciones (App-ID), acción allow/deny, logging y registro de tráfico.
+La evaluación es REAL: el atacante (attacker.py) consulta estas reglas, así que
+una política de bloqueo cambia de verdad lo que se puede escanear/atacar.
 
-/**
- * Clasifica el tipo de equipo a partir del campo `type` del Excel.
- * Es case-insensitive y maneja variantes en español e inglés.
- */
-function classifyType(type = "") {
-  const t = type.toLowerCase().trim();
+Zonas usadas por el laboratorio:
+  IT    — red corporativa (donde está el Kali del atacante)
+  DMZ   — Historian / MES / servidores / eWON
+  OT    — control y campo (PLC, HMI, SCADA, motores, válvulas, sensores)
+"""
 
-  if (t.includes("plc") || t.includes("controller") || t.includes("controlador"))
-    return "PLC";
-
-  if (t.includes("hmi") || t.includes("panel") || t.includes("operator"))
-    return "HMI";
-
-  if (t.includes("scada") || t.includes("supervisory"))
-    return "SCADA";
-
-  if (t.includes("mes") || t.includes("manufacturing exec"))
-    return "MES";
-
-  if (t.includes("hist") || t.includes("historian"))
-    return "HISTORIAN";
-
-  if (t.includes("engineering") || t.includes("ingenieria") ||
-      t.includes("workstation") || t.includes("estacion"))
-    return "WORKSTATION";
-
-  if (t.includes("sensor") || t.includes("transmisor") || t.includes("transmitter") ||
-      t.includes("temp") || t.includes("press") || t.includes("level") || t.includes("flow"))
-    return "SENSOR";
-
-  if (t.includes("motor") || t.includes("drive") || t.includes("variador") || t.includes("vfd"))
-    return "DRIVE";
-
-  if (t.includes("valve") || t.includes("valvula") || t.includes("válvula") || t.includes("actuator"))
-    return "VALVE";
-
-  if (t.includes("conveyor") || t.includes("banda") || t.includes("transport"))
-    return "DRIVE"; // same interface
-
-  if (t.includes("cnc") || t.includes("maquinado") || t.includes("machining") || t.includes("molder"))
-    return "SENSOR"; // simplified — show live vars
-
-  if (t.includes("robot"))
-    return "DRIVE"; // simplified — show motion control
-
-  if (t.includes("switch") || t.includes("conmutador"))
-    return "NETWORK";
-
-  if (t.includes("firewall") || t.includes("mguard") || t.includes("palo alto") ||
-      t.includes("paloalto") || t.includes("pan-os") || t.includes("fortigate") ||
-      t.includes("security appliance"))
-    return "FIREWALL";
-
-  if (t.includes("ewon") || t.includes("gateway") || t.includes("router") || t.includes("modem"))
-    return "NETWORK";
-
-  if (t.includes("vision") || t.includes("camera") || t.includes("camara"))
-    return "SENSOR";
-
-  if (t.includes("tester") || t.includes("analyzer") || t.includes("analizador"))
-    return "SENSOR";
-
-  if (t.includes("printer") || t.includes("impresora"))
-    return "GENERIC";
-
-  return "GENERIC";
+# App-ID por protocolo (lo que viaja), para reglas basadas en aplicación.
+APP_OF_PROTO = {
+    "S7COMM": "s7comm", "S7": "s7comm", "OPC-UA": "opcua", "OPCUA": "opcua",
+    "MODBUS": "modbus", "ETHERNET/IP": "ethernet-ip", "ETHERNETIP": "ethernet-ip",
+    "DNP3": "dnp3", "PROFINET": "profinet", "HTTP": "web-browsing", "HTTPS": "ssl",
+    "SSH": "ssh", "RDP": "ms-rdp", "SMB": "ms-ds-smb", "FTP": "ftp",
+    "SNMP": "snmp", "MQTT": "mqtt", "ICMP": "ping",
 }
 
-/**
- * Componente principal.
- * Props:
- *   asset       — activo normalizado (campo `type` viene del Excel)
- *   labData     — datos completos del lab (para leer variables del Excel)
- *   plant       — estado de la planta (process, events)
- *   events      — array de eventos
- *   onBack      — callback para volver a la vista anterior
- */
-export default function EquipmentInterface({ asset, labData, plant, events = [], onBack }) {
-  if (!asset) return null;
 
-  const deviceClass = classifyType(asset.type);
-  const commonProps = { asset, labData, plant, events, onBack };
+def app_of(proto):
+    return APP_OF_PROTO.get((proto or "").upper().replace(" ", ""),
+                            APP_OF_PROTO.get((proto or "").upper(), (proto or "any").lower()))
 
-  switch (deviceClass) {
-    case "PLC":
-      return <PLCInterface {...commonProps}/>;
 
-    case "HMI":
-      return <HMIInterface {...commonProps}/>;
+def default_rulebase():
+    """Rulebase OT seguro por defecto (buenas prácticas IEC 62443)."""
+    return [
+        {"id": 1, "name": "OT-Intrazona",      "from": "OT",  "to": "OT",  "app": ["any"],              "action": "allow", "log": False},
+        {"id": 2, "name": "DMZ-a-OT-OPC",      "from": "DMZ", "to": "OT",  "app": ["opcua"],            "action": "allow", "log": True},
+        {"id": 3, "name": "IT-a-DMZ-Web",      "from": "IT",  "to": "DMZ", "app": ["web-browsing","ssl"],"action": "allow", "log": True},
+        {"id": 4, "name": "Mgmt-SSH-a-DMZ",    "from": "IT",  "to": "DMZ", "app": ["ssh"],              "action": "allow", "log": True},
+        {"id": 5, "name": "Bloqueo-IT-a-OT",   "from": "IT",  "to": "OT",  "app": ["any"],              "action": "deny",  "log": True},
+    ]
 
-    case "SCADA":
-    case "MES":
-    case "HISTORIAN":
-      return <ServerInterface {...commonProps}/>;
 
-    case "WORKSTATION":
-      return <WorkstationInterface {...commonProps}/>;
+def _zmatch(rule_zone, zone):
+    return rule_zone in ("any", zone)
 
-    case "SENSOR":
-      return <SensorInterface {...commonProps}/>;
 
-    case "DRIVE":
-    case "VALVE":
-      return <DriveInterface {...commonProps}/>;
+def _amatch(rule_apps, app):
+    return "any" in rule_apps or app in rule_apps
 
-    case "FIREWALL":
-      return <FirewallInterface {...commonProps}/>;
 
-    case "NETWORK":
-      return <NetworkInterface {...commonProps}/>;
+class Firewall:
+    def __init__(self, asset_id, name=""):
+        self.asset_id = asset_id
+        self.name = name or asset_id
+        self.rules = default_rulebase()
+        self.zones = ["IT", "DMZ", "OT"]
+        self.traffic_log = []     # rolling [{ts,from,to,src,dst,app,action,rule}]
+        self._seq = 0
 
-    default:
-      return <GenericInterface {...commonProps}/>;
-  }
-}
+    # ------------------------------------------------- evaluación
+    def evaluate(self, from_zone, to_zone, app):
+        """Devuelve (action, rule_name) por primera coincidencia; default deny."""
+        for r in self.rules:
+            if _zmatch(r.get("from", "any"), from_zone) and \
+               _zmatch(r.get("to", "any"), to_zone) and \
+               _amatch(r.get("app", ["any"]), app):
+                return (r.get("action", "deny"), r.get("name", f"rule-{r.get('id')}"))
+        return ("deny", "default-deny")
+
+    def log(self, from_zone, to_zone, src, dst, app, action, rule):
+        self._seq += 1
+        self.traffic_log.append({
+            "seq": self._seq, "ts": None,
+            "from": from_zone, "to": to_zone, "src": src, "dst": dst,
+            "app": app, "action": action, "rule": rule,
+        })
+        if len(self.traffic_log) > 200:
+            self.traffic_log = self.traffic_log[-200:]
+
+    # ------------------------------------------------- configuración
+    def set_rules(self, rules):
+        """Reemplaza el rulebase (commit desde la interfaz). Renumera ids."""
+        clean = []
+        for i, r in enumerate(rules or [], 1):
+            apps = r.get("app") or ["any"]
+            if isinstance(apps, str):
+                apps = [a.strip() for a in apps.replace(";", ",").split(",") if a.strip()] or ["any"]
+            clean.append({
+                "id": i,
+                "name": str(r.get("name", f"rule-{i}"))[:40],
+                "from": str(r.get("from", "any")),
+                "to": str(r.get("to", "any")),
+                "app": apps,
+                "action": "allow" if str(r.get("action", "deny")).lower() == "allow" else "deny",
+                "log": bool(r.get("log", True)),
+            })
+        self.rules = clean
+        return self.rules
+
+    def counters(self):
+        allowed = sum(1 for t in self.traffic_log if t["action"] == "allow")
+        denied = sum(1 for t in self.traffic_log if t["action"] == "deny")
+        return {"allowed": allowed, "denied": denied, "rules": len(self.rules)}
+
+    def to_dict(self, mode="ENFORCING"):
+        return {
+            "asset_id": self.asset_id, "name": self.name, "mode": mode,
+            "zones": self.zones, "rules": self.rules,
+            "traffic": self.traffic_log[-80:], "counters": self.counters(),
+        }

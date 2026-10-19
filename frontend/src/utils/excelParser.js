@@ -1,444 +1,393 @@
 /**
  * excelParser.js
- * Convierte cualquier Excel de inventario OT al formato interno del Lab.
- * Maneja nombres de columnas variados, separadores distintos y hojas con nombres
- * en cualquier idioma.
+ * Convierte CUALQUIER Excel de inventario OT al formato interno del Lab.
+ * Robusto ante: nombres de columnas en español/inglés, hojas con cualquier
+ * nombre, conexiones en una hoja de comunicaciones Y/O en una columna
+ * "Conectado_a", y referencias mezcladas por Asset_ID o por Hostname.
  *
- * Flujo:
- *   XLSX.utils.sheet_to_json(ws)  →  parseExcel(rawSheets)  →  LabData
- *
- * LabData (formato interno):
- *   assets[]       — activos normalizados
- *   connections[]  — conexiones normalizadas
- *   lines[]        — metadatos de líneas de producción
- *   variables[]    — variables por activo (para interacción PLC)
- *   vlans[]        — VLANs / zonas de red
- *   protocols[]    — catálogo de protocolos
+ *   XLSX.utils.sheet_to_json(ws,{defval:null,raw:false}) → parseExcel(rawSheets) → LabData
  */
 
-/* ── Diccionario de mapeo de columnas ──────────────────────────────────────
-   Cada clave interna tiene una lista de nombres posibles en el Excel.
-   Se prueba: coincidencia exacta → parcial → sin tildes.
-────────────────────────────────────────────────────────────────────────── */
+/* ── Diccionario de columnas (interno → posibles nombres) ── */
 const ASSET_COLS = {
-    id:          ["id", "asset_id", "device_id", "equipo_id", "identifier", "tag"],
-    name:        ["name", "nombre", "device_name", "asset_name", "descripcion_corta", "label"],
-    type:        ["type", "tipo", "device_type", "asset_type", "category", "categoria"],
-    vendor:      ["vendor", "fabricante", "manufacturer", "make", "brand", "marca"],
-    model:       ["model", "modelo", "model_number", "part_number", "version"],
-    ip:          ["ip", "ip_address", "ip_addr", "address", "direccion_ip", "network_address"],
-    mac:         ["mac", "mac_address", "hardware_address", "physical_address", "mac_addr"],
-    vlan:        ["vlan", "vlan_id", "vlan_number", "red", "network", "segmento"],
-    line:        ["line", "linea", "line_id", "production_line", "area", "zone", "zona"],
-    status:      ["status", "estado", "state", "condition", "condicion"],
-    purdueLevel: ["purdue_level", "purdue", "level", "nivel", "isa_level", "layer", "capa"],
-    firmware:    ["os_firmware", "firmware", "os", "version_sw", "software"],
-    application: ["application", "aplicacion", "software", "app"],
-    protocols:   ["protocols", "protocol", "protocolo", "protocolos", "comm_protocols", "communication"],
-    ports:       ["ports", "port", "puerto", "puertos", "port_number"],
-    description: ["description", "descripcion", "notes", "notas", "comment", "comentario", "remarks"],
+  id:          ["asset_id","id","device_id","equipo_id","activo_id","identifier","tag","ot_id"],
+  name:        ["hostname","name","nombre","device_name","asset_name","host","label","equipo"],
+  type:        ["tipo_activo","asset_type","device_type","type","tipo","categoria","category","clase"],
+  vendor:      ["fabricante","vendor","manufacturer","marca","make","brand"],
+  model:       ["modelo","model","model_number","part_number","referencia"],
+  ip:          ["ip","ip_address","ip_addr","direccion_ip","address","ipv4"],
+  mac:         ["mac","mac_address","hardware_address","physical_address"],
+  vlan:        ["vlan","vlan_id","vlan_number","segmento"],
+  line:        ["linea_id","line_id","linea","line","production_line","linea_area","area_linea"],
+  area:        ["linea_area","area","subarea","zona_area","sector"],
+  status:      ["estado","status","state","condicion","condition"],
+  purdueLevel: ["nivel_purdue","purdue_level","purdue","nivel","isa_level","level","capa"],
+  firmware:    ["firmware_so","firmware","os","sistema_operativo","version_sw","software_os"],
+  application: ["aplicacion","application","software","app"],
+  protocols:   ["protocolos","protocols","protocol","protocolo","comm_protocols"],
+  ports:       ["puertos","ports","port","puerto","port_number"],
+  zone:        ["zona_seguridad","security_zone","zona","zone","purdue_zone"],
+  criticality: ["criticidad","criticality","criticalidad","importancia","severity"],
+  hostname:    ["hostname","host","nombre_host"],
+  connectedTo: ["conectado_a","connected_to","uplink","conexiones","conecta_con","parent","connected"],
+  description: ["descripcion","description","notes","notas","comentario","comment","detalle"],
+};
+
+const CONN_COLS = {
+  sourceId:  ["origen","source","source_id","from","desde","src","equipo_origen","origen_id","asset_origen","a_origen"],
+  targetId:  ["destino","destination","target","target_id","to","hasta","dest","dst","equipo_destino","destino_id","asset_destino"],
+  protocol:  ["protocolo","protocol","comm_protocol","servicio","service","aplicacion"],
+  port:      ["puerto","port","puertos","ports","port_number"],
+  direction: ["direccion","direction","flow","flujo","sentido"],
+  allowed:   ["permitido_fw","permitido","allowed","enabled","active","permit"],
+  vlan:      ["vlan","vlan_id"],
+  usage:     ["uso","usage","descripcion","nota"],
+};
+
+const LINE_COLS = {
+  id:          ["linea_id","line_id","id","linea","line"],
+  name:        ["linea_area","line_name","nombre","name","descripcion","area"],
+  description: ["descripcion","description","details","detalle","etapas_estaciones"],
+  vlan:        ["vlan_ot","vlan","vlan_id"],
+  order:       ["order","orden","sequence","sort"],
+};
+
+const FW_COLS = {
+  id:          ["regla","rule","id","nombre","name"],
+  source:      ["origen","source","from","src"],
+  destination: ["destino","destination","target","to","dst"],
+  service:     ["servicio","service","aplicacion","application","protocolo"],
+  ports:       ["puertos","ports","puerto","port"],
+  action:      ["accion","action","permitir","allow_deny"],
+  log:         ["log","logging","registro"],
+  priority:    ["prioridad","priority","orden","order"],
+  note:        ["justificacion","justification","nota","note","descripcion"],
+};
+
+const VAR_COLS = {
+  assetId:      ["asset_id","asset","equipo","device","activo"],
+  variable:     ["variable","tag","name","nombre"],
+  type:         ["type","tipo","data_type","datatype"],
+  initialValue: ["initial_value","valor_inicial","default","value","valor"],
+  min:          ["min","minimo","min_value","minimum"],
+  max:          ["max","maximo","max_value","maximum"],
+  unit:         ["unit","unidad","units","measure"],
+  description:  ["description","descripcion","notes"],
+};
+
+/* ── Utilidades ── */
+function norm(s = "") {
+  return String(s).toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function findCol(cols, candidates) {
+  for (const cand of candidates) {
+    const exact = cols.find(c => c.toLowerCase() === cand.toLowerCase());
+    if (exact) return exact;
+  }
+  for (const cand of candidates) {
+    const normed = cols.find(c => norm(c) === norm(cand));
+    if (normed) return normed;
+  }
+  // parcial: preferimos que la COLUMNA contenga al candidato (más preciso)
+  for (const cand of candidates) {
+    const p = cols.find(c => norm(c).includes(norm(cand)));
+    if (p) return p;
+  }
+  for (const cand of candidates) {
+    const p = cols.find(c => norm(cand).includes(norm(c)) && norm(c).length >= 3);
+    if (p) return p;
+  }
+  return null;
+}
+
+function hasAny(cols, candidates) { return !!findCol(cols, candidates); }
+
+/* ── Clasificación de hojas ── */
+function detectBySheetName(name = "") {
+  const n = norm(name);
+  if (/(firewall|regla|rule|politic|policy|acl)/.test(n)) return "firewall";
+  if (/(comunicacion|flujo|flow|trafico|relacion|conexion|conn|link|enlace|topolog)/.test(n)) return "connections";
+  if (/(inventario|activo|asset|device|equipo|host)/.test(n)) return "assets";
+  if (/(linea|line|produccion|production)/.test(n)) return "lines";
+  if (/(^var|variable|tag|setpoint)/.test(n)) return "variables";
+  if (/(arquitectura|architecture|purdue|readme|info|nota|leyenda|diccionario|instruc)/.test(n)) return "ignore";
+  return null;
+}
+
+function detectByContent(rows) {
+  if (!rows?.length) return "unknown";
+  const cols = Object.keys(rows[0] || {});
+  const hasSrc = hasAny(cols, CONN_COLS.sourceId);
+  const hasDst = hasAny(cols, CONN_COLS.targetId);
+  const hasId  = hasAny(cols, ASSET_COLS.id);
+  const hasType= hasAny(cols, ASSET_COLS.type);
+  const hasIp  = hasAny(cols, ASSET_COLS.ip);
+  const hasAction = hasAny(cols, FW_COLS.action);
+
+  // Firewall: origen+destino+acción (allow/deny)
+  if (hasSrc && hasDst && hasAction) return "firewall";
+  // Conexiones: par origen/destino presentes
+  if (hasSrc && hasDst) return "connections";
+  // Variables
+  if (hasAny(cols, VAR_COLS.assetId) && hasAny(cols, VAR_COLS.variable)) return "variables";
+  // Activos: id + (tipo o ip)
+  if (hasId && (hasType || hasIp)) return "assets";
+  return "unknown";
+}
+
+function extractRow(row, colDef) {
+  const rawCols = Object.keys(row);
+  const out = {};
+  for (const [key, cands] of Object.entries(colDef)) {
+    const found = findCol(rawCols, cands);
+    out[key] = found ? (row[found] ?? null) : null;
+  }
+  return out;
+}
+
+/* ── Limpieza de valores ── */
+function splitList(raw) {
+  if (!raw) return [];
+  return String(raw).split(/[;,|/]/).map(s => s.trim()).filter(Boolean);
+}
+function cleanProto(raw) {
+  if (!raw) return "";
+  // "S7comm / EtherNet-IP (según PLC)" -> "S7comm"
+  return String(raw).split("(")[0].split(/[;,/]/)[0].trim();
+}
+function firstPort(raw) {
+  if (!raw) return "";
+  const m = String(raw).match(/\d{2,5}/);
+  return m ? m[0] : "";
+}
+function parsePurdue(raw) {
+  if (raw == null) return "1";
+  const s = String(raw).trim();
+  const m = s.match(/\d(\.\d)?/);
+  return m ? m[0] : "1";
+}
+function parseDirection(raw = "") {
+  const r = norm(raw);
+  if (r.includes("bi") || r.includes("ambos")) return "bidirectional";
+  if (r.includes("salida") || r.includes("out")) return "outbound";
+  if (r.includes("entrada") || r.includes("in")) return "inbound";
+  return "bidirectional";
+}
+
+/* ── Normalizadores ── */
+function normalizeAsset(raw) {
+  const r = extractRow(raw, ASSET_COLS);
+  const id = String(r.id ?? "").trim();
+  return {
+    id,
+    name:        String(r.name ?? r.hostname ?? id ?? "").trim(),
+    hostname:    String(r.hostname ?? r.name ?? "").trim(),
+    type:        String(r.type ?? "Unknown").trim(),
+    vendor:      String(r.vendor ?? "").trim(),
+    model:       String(r.model ?? "").trim(),
+    ip:          String(r.ip ?? "").trim(),
+    mac:         String(r.mac ?? "").trim(),
+    vlan:        String(r.vlan ?? "").trim(),
+    line:        String(r.line ?? "SHARED").trim() || "SHARED",
+    area:        String(r.area ?? "").trim(),
+    status:      String(r.status ?? "ONLINE").toUpperCase(),
+    purdueLevel: parsePurdue(r.purdueLevel),
+    firmware:    String(r.firmware ?? "").trim(),
+    application: String(r.application ?? "").trim(),
+    protocols:   splitList(r.protocols),
+    ports:       splitList(r.ports),
+    zone:        String(r.zone ?? "").trim(),
+    criticality: String(r.criticality ?? "").trim(),
+    connectedTo: splitList(r.connectedTo),
+    description: String(r.description ?? "").trim(),
   };
-  
-  const CONN_COLS = {
-    sourceId:  ["source", "origen", "source_id", "from", "desde", "src", "equipo_origen"],
-    targetId:  ["destination", "destino", "target", "target_id", "to", "hasta", "dest", "dst", "equipo_destino"],
-    protocol:  ["protocol", "protocolo", "comm_protocol"],
-    port:      ["port", "puerto", "port_number"],
-    direction: ["direction", "direccion", "flow", "flujo", "sentido"],
-    allowed:   ["allowed", "permitido", "enabled", "active"],
+}
+
+/* ── FUNCIÓN PRINCIPAL ── */
+export function parseExcel(rawSheets) {
+  const classified = {};
+  for (const [sheetName, rows] of Object.entries(rawSheets)) {
+    if (!rows?.length) continue;
+    const t = detectBySheetName(sheetName) ?? detectByContent(rows);
+    if (t === "ignore" || t === "unknown") continue;
+    // una sola hoja por tipo (la primera que matchee)
+    if (!classified[t]) classified[t] = { sheetName, rows };
+  }
+
+  const result = {
+    assets: [], connections: [], lines: [], variables: [],
+    vlans: [], protocols: [], firewallRules: [],
+    meta: {
+      sheetNames: Object.keys(rawSheets),
+      classified: Object.entries(classified).map(([type, { sheetName }]) => ({ type, sheetName })),
+      importedAt: new Date().toISOString(),
+      warnings: [],
+    },
   };
-  
-  const LINE_COLS = {
-    id:          ["line_id", "id", "linea_id", "identifier"],
-    name:        ["name", "nombre", "line_name", "descripcion"],
-    description: ["description", "descripcion", "details", "notas"],
-    order:       ["order", "orden", "sequence", "sort"],
+
+  const nonEmpty = rows => rows.filter(r => r && Object.values(r).some(v => v != null));
+
+  /* ASSETS */
+  if (classified.assets) {
+    result.assets = nonEmpty(classified.assets.rows)
+      .map(normalizeAsset)
+      .filter(a => a.id && a.id !== "?");
+  }
+
+  /* Índice de referencias: por id, por hostname, por name → id canónico */
+  const refIndex = {};
+  for (const a of result.assets) {
+    for (const key of [a.id, a.hostname, a.name]) {
+      const k = norm(key);
+      if (k && !(k in refIndex)) refIndex[k] = a.id;
+    }
+  }
+  const resolve = (ref) => {
+    const k = norm(ref);
+    return refIndex[k] || String(ref).trim();  // si no resuelve, deja el texto
   };
-  
-  const VAR_COLS = {
-    assetId:      ["asset", "asset_id", "equipo", "device"],
-    variable:     ["variable", "tag", "name", "nombre"],
-    type:         ["type", "tipo", "data_type", "datatype"],
-    initialValue: ["initial_value", "valor_inicial", "default", "default_value", "value"],
-    min:          ["min", "minimum", "minimo", "min_value"],
-    max:          ["max", "maximum", "maximo", "max_value"],
-    unit:         ["unit", "units", "unidad", "measure"],
-    description:  ["description", "descripcion", "notes"],
+
+  /* CONNECTIONS — hoja de comunicaciones */
+  const connKey = new Set();
+  const pushConn = (c) => {
+    if (!c.sourceId || !c.targetId || c.sourceId === c.targetId) return;
+    const key = [c.sourceId, c.targetId].sort().join("|") + "|" + (c.protocol || "");
+    if (connKey.has(key)) return;
+    connKey.add(key);
+    result.connections.push(c);
   };
-  
-  const VLAN_COLS = {
-    id:          ["vlan_id", "id", "vlan", "network_id"],
-    name:        ["name", "nombre", "vlan_name"],
-    zone:        ["zone", "zona", "area", "purdue_zone"],
-    description: ["description", "descripcion"],
+
+  if (classified.connections) {
+    for (const row of nonEmpty(classified.connections.rows)) {
+      const r = extractRow(row, CONN_COLS);
+      if (!r.sourceId || !r.targetId) continue;
+      pushConn({
+        sourceId:  resolve(r.sourceId),
+        targetId:  resolve(r.targetId),
+        protocol:  cleanProto(r.protocol),
+        port:      firstPort(r.port),
+        direction: parseDirection(r.direction),
+        allowed:   r.allowed == null || !/^(no|deny|false|0)/i.test(String(r.allowed)),
+        source:    "comunicaciones",
+      });
+    }
+  }
+
+  /* CONNECTIONS — columna Conectado_a del inventario */
+  for (const a of result.assets) {
+    for (const ref of a.connectedTo) {
+      pushConn({
+        sourceId:  a.id,
+        targetId:  resolve(ref),
+        protocol:  a.protocols[0] ? cleanProto(a.protocols[0]) : "",
+        port:      a.ports[0] ? firstPort(a.ports[0]) : "",
+        direction: "bidirectional",
+        allowed:   true,
+        source:    "conectado_a",
+      });
+    }
+  }
+
+  /* LINES */
+  if (classified.lines) {
+    result.lines = nonEmpty(classified.lines.rows).map((row, i) => {
+      const r = extractRow(row, LINE_COLS);
+      return {
+        id:          String(r.id ?? "").trim(),
+        name:        String(r.name ?? r.id ?? "").trim(),
+        description: String(r.description ?? "").trim(),
+        vlan:        String(r.vlan ?? "").trim(),
+        order:       parseInt(r.order) || (i + 1),
+      };
+    }).filter(l => l.id).sort((a, b) => a.order - b.order);
+  }
+  if (!result.lines.length && result.assets.length) {
+    const seen = {};
+    for (const a of result.assets) {
+      if (!seen[a.line]) seen[a.line] = { id: a.line, name: a.line, description: "", vlan: "", order: Object.keys(seen).length + 1 };
+    }
+    result.lines = Object.values(seen).sort((a, b) => a.order - b.order);
+  }
+
+  /* VARIABLES */
+  if (classified.variables) {
+    result.variables = nonEmpty(classified.variables.rows).map(row => {
+      const r = extractRow(row, VAR_COLS);
+      return {
+        assetId: resolve(r.assetId), variable: String(r.variable ?? "").trim(),
+        type: String(r.type ?? "float"), initialValue: r.initialValue,
+        min: r.min, max: r.max, unit: String(r.unit ?? "").trim(),
+        description: String(r.description ?? "").trim(),
+      };
+    }).filter(v => v.assetId && v.variable);
+  }
+
+  /* FIREWALL RULES (para la interfaz del firewall / futuro) */
+  if (classified.firewall) {
+    result.firewallRules = nonEmpty(classified.firewall.rows).map(row => {
+      const r = extractRow(row, FW_COLS);
+      return {
+        id: String(r.id ?? "").trim(),
+        source: String(r.source ?? "").trim(),
+        destination: String(r.destination ?? "").trim(),
+        service: String(r.service ?? "").trim(),
+        ports: splitList(r.ports),
+        action: /deny|block|rech/i.test(String(r.action ?? "")) ? "deny" : "allow",
+        log: !/^(no|false|0)/i.test(String(r.log ?? "si")),
+        priority: parseInt(r.priority) || 100,
+        note: String(r.note ?? "").trim(),
+      };
+    }).filter(r => r.id);
+  }
+
+  /* Avisos útiles */
+  if (!result.assets.length) result.meta.warnings.push("No se detectó ninguna hoja de activos con columna de ID.");
+  if (classified.connections && !result.connections.length) result.meta.warnings.push("Se detectó hoja de comunicaciones pero no se pudieron mapear origen/destino.");
+
+  return result;
+}
+
+/* ── Resumen para la UI ── */
+export function summarizeLabData(data) {
+  const lineCount = data.lines.filter(l => l.id && l.id !== "SHARED").length;
+  const assetsByLine = {};
+  for (const a of data.assets) assetsByLine[a.line] = (assetsByLine[a.line] ?? 0) + 1;
+  return {
+    totalAssets: data.assets.length,
+    totalConns:  data.connections.length,
+    totalLines:  lineCount,
+    totalVars:   data.variables.length,
+    totalVlans:  (data.vlans || []).length,
+    totalFwRules: (data.firewallRules || []).length,
+    assetsByLine,
+    typeBreakdown: Object.entries(
+      data.assets.reduce((acc, a) => { acc[a.type] = (acc[a.type] ?? 0) + 1; return acc; }, {})
+    ).sort((a, b) => b[1] - a[1]),
+    classified: data.meta?.classified || [],
+    warnings: data.meta?.warnings || [],
   };
-  
-  const PROTO_COLS = {
-    protocol:    ["protocol", "protocolo", "name", "nombre"],
-    transport:   ["transport", "transporte", "layer"],
-    port:        ["port", "puerto", "default_port"],
-    description: ["description", "descripcion"],
-  };
-  
-  /* ── Detección de tipo de hoja ─────────────────────────────────────────── */
-  const SHEET_DETECT = {
-    assets:      { required: ["id", "ip", "type"], weight: 10 },
-    connections: { required: ["source", "dest"],   weight: 10 },
-    lines:       { required: ["line_id", "name"],  weight: 8  },
-    variables:   { required: ["asset", "variable"],weight: 9  },
-    vlans:       { required: ["vlan"],             weight: 7  },
-    protocols:   { required: ["protocol"],         weight: 5  },
-  };
-  
-  /* ── Utilidades ─────────────────────────────────────────────────────────── */
-  
-  /** Normaliza una cadena para comparación fuzzy */
-  function norm(s = "") {
-    return String(s).toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")  // sin tildes
-      .replace(/[^a-z0-9]/g, "");                          // solo alfanumérico
+}
+
+/* ── Compatibilidad con la UI existente ── */
+export function detectColumnMappings(rawSheets) {
+  const result = {};
+  for (const [name, rows] of Object.entries(rawSheets)) {
+    if (!rows?.length) continue;
+    const type = detectBySheetName(name) ?? detectByContent(rows);
+    const cols = Object.keys(rows[0] ?? {});
+    const map = (def) => Object.fromEntries(
+      Object.entries(def).map(([k, c]) => [k, findCol(cols, c)]).filter(([, v]) => v)
+    );
+    if (type === "assets")      result.assets      = map(ASSET_COLS);
+    if (type === "connections") result.connections = map(CONN_COLS);
+    if (type === "lines")       result.lines       = map(LINE_COLS);
+    if (type === "variables")   result.variables   = map(VAR_COLS);
+    if (type === "firewall")    result.firewall    = map(FW_COLS);
   }
-  
-  /** Busca en `cols` el que más se parezca a alguno de `candidates` */
-  function findCol(cols, candidates) {
-    for (const cand of candidates) {
-      // Exacto (sin normalizar)
-      const exact = cols.find(c => c.toLowerCase() === cand.toLowerCase());
-      if (exact) return exact;
-    }
-    for (const cand of candidates) {
-      // Exacto normalizado
-      const normed = cols.find(c => norm(c) === norm(cand));
-      if (normed) return normed;
-    }
-    for (const cand of candidates) {
-      // Parcial normalizado
-      const partial = cols.find(c => norm(c).includes(norm(cand)) || norm(cand).includes(norm(c)));
-      if (partial) return partial;
-    }
-    return null;
-  }
-  
-  /** Detecta qué tipo de hoja es basándose en sus columnas */
-  function detectSheetType(rows) {
-    if (!rows?.length) return "unknown";
-    const cols = Object.keys(rows[0] || {}).map(c => norm(c));
-  
-    const scores = {};
-    for (const [type, { required, weight }] of Object.entries(SHEET_DETECT)) {
-      const matches = required.filter(req =>
-        cols.some(col => col.includes(norm(req)) || norm(req).includes(col))
-      ).length;
-      scores[type] = (matches / required.length) * weight;
-    }
-  
-    // También detectar por nombre de hoja (si se pasa)
-    const best = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-    return best[0][1] > 0 ? best[0][0] : "unknown";
-  }
-  
-  /** Detecta tipo de hoja también por su nombre */
-  function detectBySheetName(name = "") {
-    const n = norm(name);
-    if (n.includes("asset") || n.includes("activo") || n.includes("inventario") || n.includes("device") || n.includes("equipo")) return "assets";
-    if (n.includes("conn") || n.includes("link") || n.includes("enlace") || n.includes("topolog")) return "connections";
-    if (n.includes("line") || n.includes("linea")) return "lines";
-    if (n.includes("var") || n.includes("tag"))   return "variables";
-    if (n.includes("vlan") || n.includes("red") || n.includes("network")) return "vlans";
-    if (n.includes("proto")) return "protocols";
-    return null;
-  }
-  
-  /** Extrae y normaliza un valor de fila dado un diccionario de columnas */
-  function extractRow(row, colMap, colDef) {
-    const result = {};
-    const rawCols = Object.keys(row);
-  
-    for (const [internalKey, candidates] of Object.entries(colDef)) {
-      // Primero usar mapeo manual si existe
-      if (colMap[internalKey]) {
-        result[internalKey] = row[colMap[internalKey]] ?? null;
-      } else {
-        const found = findCol(rawCols, candidates);
-        result[internalKey] = found ? (row[found] ?? null) : null;
-      }
-    }
-    return result;
-  }
-  
-  /** Limpia y tipifica un protocolo (split por ; o ,) */
-  function parseProtocols(raw) {
-    if (!raw) return [];
-    return String(raw)
-      .split(/[;,|]/)
-      .map(p => p.trim())
-      .filter(Boolean);
-  }
-  
-  /** Normaliza el nivel Purdue a string limpio */
-  function parsePurdueLevel(raw) {
-    if (raw == null) return "1";
-    const s = String(raw).trim();
-    if (s === "3.5" || s === "3,5") return "3.5";
-    const n = parseInt(s);
-    return isNaN(n) ? "1" : String(Math.min(5, Math.max(0, n)));
-  }
-  
-  /** Normaliza dirección de conexión */
-  function parseDirection(raw = "") {
-    const r = norm(raw);
-    if (r.includes("bi") || r.includes("ambos"))       return "bidirectional";
-    if (r.includes("out") || r.includes("salida"))     return "outbound";
-    if (r.includes("in") || r.includes("entrada"))     return "inbound";
-    return "bidirectional";
-  }
-  
-  /* ── Normalizadores por tipo ─────────────────────────────────────────────── */
-  
-  function normalizeAsset(raw, colMap = {}) {
-    const r = extractRow(raw, colMap, ASSET_COLS);
-    return {
-      id:          String(r.id  ?? "?"),
-      name:        String(r.name ?? r.id ?? ""),
-      type:        String(r.type ?? "Unknown"),
-      vendor:      String(r.vendor ?? ""),
-      model:       String(r.model ?? ""),
-      ip:          String(r.ip  ?? "—"),
-      mac:         String(r.mac ?? "—"),
-      vlan:        String(r.vlan ?? ""),
-      line:        String(r.line ?? "SHARED"),
-      status:      String(r.status ?? "ONLINE").toUpperCase(),
-      purdueLevel: parsePurdueLevel(r.purdueLevel),
-      firmware:    String(r.firmware ?? ""),
-      application: String(r.application ?? ""),
-      protocols:   parseProtocols(r.protocols),
-      ports:       r.ports ? parseProtocols(r.ports) : [],
-      description: String(r.description ?? ""),
-      _raw: raw,
-    };
-  }
-  
-  function normalizeConnection(raw, colMap = {}) {
-    const r = extractRow(raw, colMap, CONN_COLS);
-    return {
-      sourceId:  String(r.sourceId ?? ""),
-      targetId:  String(r.targetId ?? ""),
-      protocol:  String(r.protocol ?? ""),
-      port:      r.port != null ? String(r.port) : "",
-      direction: parseDirection(r.direction),
-      allowed:   r.allowed == null || String(r.allowed).toUpperCase() !== "NO",
-      _raw: raw,
-    };
-  }
-  
-  function normalizeLine(raw, colMap = {}) {
-    const r = extractRow(raw, colMap, LINE_COLS);
-    return {
-      id:          String(r.id ?? ""),
-      name:        String(r.name ?? r.id ?? ""),
-      description: String(r.description ?? ""),
-      order:       parseInt(r.order) || 99,
-    };
-  }
-  
-  function normalizeVariable(raw, colMap = {}) {
-    const r = extractRow(raw, colMap, VAR_COLS);
-    return {
-      assetId:      String(r.assetId ?? ""),
-      variable:     String(r.variable ?? ""),
-      type:         String(r.type ?? "float"),
-      initialValue: r.initialValue,
-      min:          r.min,
-      max:          r.max,
-      unit:         String(r.unit ?? ""),
-      description:  String(r.description ?? ""),
-    };
-  }
-  
-  function normalizeVlan(raw, colMap = {}) {
-    const r = extractRow(raw, colMap, VLAN_COLS);
-    return {
-      id:          String(r.id ?? ""),
-      name:        String(r.name ?? ""),
-      zone:        String(r.zone ?? ""),
-      description: String(r.description ?? ""),
-    };
-  }
-  
-  function normalizeProtocol(raw, colMap = {}) {
-    const r = extractRow(raw, colMap, PROTO_COLS);
-    return {
-      protocol:    String(r.protocol ?? ""),
-      transport:   String(r.transport ?? ""),
-      port:        r.port != null ? String(r.port) : "",
-      description: String(r.description ?? ""),
-    };
-  }
-  
-  /* ── FUNCIÓN PRINCIPAL ──────────────────────────────────────────────────── */
-  
-  /**
-   * Convierte los datos crudos de SheetJS en el formato interno LabData.
-   *
-   * @param {Object} rawSheets  — { sheetName: [ rowObject, ... ], ... }
-   *                              donde rowObject son los objetos que devuelve
-   *                              XLSX.utils.sheet_to_json(ws, { defval: null })
-   * @param {Object} colMaps    — mapeos manuales opcionales por tipo:
-   *                              { assets: { id: "AssetID", ... }, connections: {...} }
-   * @returns {Object} LabData
-   */
-  export function parseExcel(rawSheets, colMaps = {}) {
-    // Clasificar cada hoja
-    const classified = {};
-    for (const [sheetName, rows] of Object.entries(rawSheets)) {
-      if (!rows?.length) continue;
-      // Intentar por nombre primero, luego por contenido
-      const byName    = detectBySheetName(sheetName);
-      const byContent = detectSheetType(rows);
-      const type = byName ?? byContent;
-  
-      if (type !== "unknown" && !classified[type]) {
-        classified[type] = { sheetName, rows };
-      }
-    }
-  
-    const result = {
-      assets:      [],
-      connections: [],
-      lines:       [],
-      variables:   [],
-      vlans:       [],
-      protocols:   [],
-      meta: {
-        sheetNames:  Object.keys(rawSheets),
-        classified:  Object.entries(classified).map(([type, { sheetName }]) => ({ type, sheetName })),
-        importedAt:  new Date().toISOString(),
-      },
-    };
-  
-    // Assets
-    if (classified.assets) {
-      result.assets = classified.assets.rows
-        .filter(r => r && Object.values(r).some(v => v != null))
-        .map(r => normalizeAsset(r, colMaps.assets ?? {}))
-        .filter(a => a.id && a.id !== "?");
-    }
-  
-    // Connections
-    if (classified.connections) {
-      result.connections = classified.connections.rows
-        .filter(r => r && Object.values(r).some(v => v != null))
-        .map(r => normalizeConnection(r, colMaps.connections ?? {}))
-        .filter(c => c.sourceId && c.targetId);
-    }
-  
-    // Lines
-    if (classified.lines) {
-      result.lines = classified.lines.rows
-        .filter(r => r && Object.values(r).some(v => v != null))
-        .map(r => normalizeLine(r, colMaps.lines ?? {}))
-        .filter(l => l.id)
-        .sort((a, b) => a.order - b.order);
-    }
-  
-    // Variables
-    if (classified.variables) {
-      result.variables = classified.variables.rows
-        .filter(r => r && Object.values(r).some(v => v != null))
-        .map(r => normalizeVariable(r, colMaps.variables ?? {}))
-        .filter(v => v.assetId && v.variable);
-    }
-  
-    // VLANs
-    if (classified.vlans) {
-      result.vlans = classified.vlans.rows
-        .filter(r => r && Object.values(r).some(v => v != null))
-        .map(r => normalizeVlan(r, colMaps.vlans ?? {}))
-        .filter(v => v.id);
-    }
-  
-    // Protocols
-    if (classified.protocols) {
-      result.protocols = classified.protocols.rows
-        .filter(r => r && Object.values(r).some(v => v != null))
-        .map(r => normalizeProtocol(r, colMaps.protocols ?? {}))
-        .filter(p => p.protocol);
-    }
-  
-    // Si no hay hoja de Lines, generarla desde los assets
-    if (!result.lines.length && result.assets.length) {
-      const lineSet = {};
-      for (const a of result.assets) {
-        if (!lineSet[a.line]) {
-          lineSet[a.line] = {
-            id:          a.line,
-            name:        a.line,
-            description: "",
-            order:       Object.keys(lineSet).length + 1,
-          };
-        }
-      }
-      result.lines = Object.values(lineSet).sort((a, b) => a.order - b.order);
-    }
-  
-    return result;
-  }
-  
-  /**
-   * Genera un resumen legible de lo que se encontró en el Excel.
-   */
-  export function summarizeLabData(data) {
-    const lineCount  = data.lines.filter(l => l.id !== "SHARED").length;
-    const assetsByLine = {};
-    for (const a of data.assets) {
-      assetsByLine[a.line] = (assetsByLine[a.line] ?? 0) + 1;
-    }
-    return {
-      totalAssets:   data.assets.length,
-      totalConns:    data.connections.length,
-      totalLines:    lineCount,
-      totalVars:     data.variables.length,
-      totalVlans:    data.vlans.length,
-      assetsByLine,
-      typeBreakdown: Object.entries(
-        data.assets.reduce((acc, a) => { acc[a.type] = (acc[a.type]??0)+1; return acc; }, {})
-      ).sort((a,b) => b[1]-a[1]),
-    };
-  }
-  
-  /**
-   * Detecta los mejores mapeos de columnas para mostrar en la UI.
-   * Retorna { assets: { id: "ID", name: "Name", ... }, connections: {...} }
-   */
-  export function detectColumnMappings(rawSheets) {
-    const result = {};
-  
-    const detect = (rows, colDef) => {
-      if (!rows?.length) return {};
-      const rawCols = Object.keys(rows[0] ?? {});
-      const mapping = {};
-      for (const [key, candidates] of Object.entries(colDef)) {
-        const found = findCol(rawCols, candidates);
-        if (found) mapping[key] = found;
-      }
-      return mapping;
-    };
-  
-    // Detectar hoja de activos
-    for (const [name, rows] of Object.entries(rawSheets)) {
-      const type = detectBySheetName(name) ?? detectSheetType(rows);
-      if (type === "assets")      result.assets      = detect(rows, ASSET_COLS);
-      if (type === "connections")  result.connections = detect(rows, CONN_COLS);
-      if (type === "lines")        result.lines       = detect(rows, LINE_COLS);
-      if (type === "variables")    result.variables   = detect(rows, VAR_COLS);
-      if (type === "vlans")        result.vlans       = detect(rows, VLAN_COLS);
-      if (type === "protocols")    result.protocols   = detect(rows, PROTO_COLS);
-    }
-  
-    return result;
-  }
-  
-  // Exportar las definiciones para la UI de mapeo manual
-  export const COL_DEFINITIONS = {
-    ASSET_COLS, CONN_COLS, LINE_COLS, VAR_COLS, VLAN_COLS, PROTO_COLS,
-  };
+  return result;
+}
+
+export const COL_DEFINITIONS = { ASSET_COLS, CONN_COLS, LINE_COLS, VAR_COLS, FW_COLS };

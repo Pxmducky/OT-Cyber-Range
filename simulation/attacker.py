@@ -31,6 +31,7 @@ PROTO_SVC = {
     "SNMP": "snmp  net-snmp", "MQTT": "mqtt  mosquitto",
 }
 
+import re
 from simulation.firewall import app_of
 
 # Categorías consideradas "OT" (protegidas por el firewall perimetral).
@@ -109,22 +110,40 @@ class AttackerConsole:
         if prog == "nmap":                  return self._nmap(parts[1:])
         if prog in ("plcscan", "s7scan"):   return self._plcscan(parts[1:])
         if prog in ("s7-stop", "s7stop"):   return self._s7_stop(parts[1:])
-        if prog == "msfconsole":            return "msf6 > (usa: s7-stop <ip> para una prueba de concepto)"
+        if prog in ("modbus-read", "modread"):   return self._modbus(parts[1:], write=False)
+        if prog in ("modbus-write", "modwrite"): return self._modbus(parts[1:], write=True)
+        if prog in ("opcua-browse", "opcua"):    return self._opcua(parts[1:])
+        if prog in ("curl", "wget", "hmi-login"):return self._http(parts[1:])
+        if prog in ("dos", "ddos", "flood"):     return self._dos(parts[1:])
+        if prog in ("hydra", "bruteforce"):      return self._hydra(parts[1:])
+        if prog in ("arpspoof", "mitm", "ettercap"): return self._mitm(parts[1:])
+        if prog == "msfconsole":            return "msf6 > consola Metasploit simulada. Usa los comandos del lab (help)."
         return f"{prog}: command not found  (escribe 'help')"
 
     # -------------------------------------------------- comandos
     def _help(self):
         return (
-            "Comandos disponibles (Kali @ OT Cyber Range):\n"
-            "  help                      esta ayuda\n"
-            "  ifconfig | whoami         info de la máquina atacante\n"
-            "  ping <ip>                 prueba de alcance\n"
-            "  nmap -sn <red>            descubrimiento de hosts\n"
-            "  nmap -sV <ip|red>         escaneo de puertos/servicios\n"
-            "  nmap --script s7-info <ip>  enumeración de PLC Siemens\n"
-            "  plcscan <ip>              enumeración de PLC\n"
-            "  s7-stop <ip>              PoC: envía STOP a la CPU (¡consecuencia real!)\n"
-            "  clear                     limpia la pantalla\n"
+            "Comandos (Kali @ OT Cyber Range) — reemplaza <ip> por la IP real de tu lab:\n"
+            "  RECON\n"
+            "    ifconfig | whoami           info de la máquina atacante\n"
+            "    ping <ip>                   prueba de alcance\n"
+            "    nmap -sn <red>              descubrimiento de hosts\n"
+            "    nmap -sV <ip|red>           escaneo de puertos/servicios\n"
+            "    nmap --script s7-info <ip>  enumeración de PLC Siemens\n"
+            "    plcscan <ip>                enumeración de PLC (S7comm)\n"
+            "    opcua-browse <ip>           enumeración OPC-UA (SCADA/HMI)\n"
+            "  ACCESO / CREDENCIALES\n"
+            "    hydra <ip> <servicio>       fuerza bruta (ssh/http/rdp)\n"
+            "    curl <ip>  |  hmi-login <ip> [user] [pass]   web/HMI\n"
+            "    arpspoof <ip1> <ip2>        MITM entre dos equipos\n"
+            "  ATAQUE / CONSECUENCIA REAL\n"
+            "    s7-stop <ip>                STOP a una CPU Siemens\n"
+            "    modbus-write <ip> <reg> <val>   escribe un registro (mueve actuadores)\n"
+            "    modbus-read <ip> <reg>      lee un registro\n"
+            "    dos <ip>                    denegación de servicio (deja el equipo fuera)\n"
+            "  SCRIPTS\n"
+            "    Usa el botón 'Script' para cargar/pegar tu propio código y ejecutarlo.\n"
+            "    clear                       limpia la pantalla\n"
         )
 
     def _ifconfig(self):
@@ -256,3 +275,195 @@ class AttackerConsole:
                 f"  [!] CPU DETENIDA. La línea de producción se detuvo.\n"
                 f"  [!] Consecuencia: motores/válvulas aguas abajo fuera de servicio.\n"
                 f"  [!] El SIEM registró el evento y disparó alarmas.")
+
+    # ---------- MODBUS ----------
+    def _modbus(self, args, write=False):
+        if (write and len(args) < 3) or (not write and len(args) < 2):
+            return "uso: modbus-write <ip> <reg> <val>  |  modbus-read <ip> <reg>"
+        ap = self._find(args[0])
+        if not ap:
+            return f"modbus: {args[0]}: host desconocido"
+        if not self._allowed(ap, "modbus", log=True):
+            _, reason, _ = self.posture()
+            return f"modbus {ap.ip}: 502/tcp filtrado por el firewall ({reason})."
+        reg = args[1]
+        if not write:
+            val = None
+            if ap.category in ("motor", "pump"):
+                val = int(ap.state.get("speed" if ap.category=="motor" else "flow", 0))
+            elif ap.category == "valve":
+                val = int(ap.state.get("position", 0))
+            self.plant.add_event("MODBUS_READ", "WARNING", ap.id, f"Lectura Modbus reg {reg} desde {self.ip}")
+            return f"modbus-read {ap.ip} reg[{reg}] = {val if val is not None else 0}"
+        value = args[2]
+        try: v = float(value)
+        except ValueError: return "modbus-write: el valor debe ser numérico"
+        # CONSECUENCIA REAL: escribir un registro mueve el actuador
+        act = None
+        if ap.category in ("motor", "pump"): act = "SPEED"
+        elif ap.category == "valve":         act = "POSITION"
+        if act:
+            self.plant.apply_equipment_action(ap.id, ap.type, act, value=v)
+            return (f"modbus-write {ap.ip} reg[{reg}] <- {v:.0f}\n"
+                    f"  [!] Actuador {ap.id} modificado SIN autenticación.\n"
+                    f"  [!] Consecuencia real en el proceso + evento en el SIEM.")
+        self.plant.add_event("MODBUS_WRITE", "HIGH", ap.id, f"Escritura Modbus reg {reg}={v} desde {self.ip}")
+        return f"modbus-write {ap.ip} reg[{reg}] <- {v:.0f}  (registro escrito)"
+
+    # ---------- OPC-UA ----------
+    def _opcua(self, args):
+        if not args: return "uso: opcua-browse <ip>"
+        ap = self._find(args[0])
+        if not ap: return f"opcua: {args[0]}: host desconocido"
+        if not self._allowed(ap, "opcua", log=True):
+            _, reason, _ = self.posture()
+            return f"opcua {ap.ip}: 4840/tcp filtrado por el firewall ({reason})."
+        self.plant.add_event("RECON_OPCUA", "WARNING", ap.id, f"Enumeración OPC-UA de {ap.id} desde {self.ip}")
+        tags = {
+            "scada": ["ns=2;Process.Temperature", "ns=2;Process.Pressure", "ns=2;Line.Running", "ns=2;Alarms.Active"],
+            "historian": ["ns=2;Hist.Temperature", "ns=2;Hist.Throughput"],
+        }.get(ap.category, ["ns=2;Device.Status", "ns=2;Device.Mode"])
+        body = "\n".join(f"    {t}  (RW)" for t in tags)
+        return (f"opcua-browse opc.tcp://{ap.ip}:4840\n"
+                f"  Endpoint: {ap.vendor or 'Server'} ({ap.id})\n"
+                f"  SecurityPolicy: None  (¡sin cifrado!)\n"
+                f"  Nodos:\n{body}\n"
+                f"  >> Vulnerable: anónimo permitido, nodos escribibles.")
+
+    # ---------- HTTP / HMI ----------
+    def _http(self, args):
+        if not args: return "uso: curl <ip>   |   hmi-login <ip> [user] [pass]"
+        ap = self._find(args[0])
+        if not ap: return f"curl: {args[0]}: host desconocido"
+        if not (self._allowed(ap, "web-browsing", log=True) or self._allowed(ap, "ssl")):
+            _, reason, _ = self.posture()
+            return f"curl {ap.ip}: 80/443 filtrado por el firewall ({reason})."
+        user = args[1] if len(args) > 1 else "admin"
+        pwd  = args[2] if len(args) > 2 else "admin"
+        self.plant.add_event("HTTP_ACCESS", "WARNING", ap.id, f"Acceso web a {ap.id} desde {self.ip} ({user})")
+        weak = pwd in ("admin", "1234", "password", "siemens", "")
+        if ap.category in ("hmi", "scada", "gateway", "server", "historian", "mes"):
+            auth = ("  [+] Login OK (credenciales por defecto admin/admin)\n"
+                    "  [!] Acceso al panel: puedes leer/forzar variables del proceso."
+                    if weak else "  [-] Login fallido.")
+            return f"GET http://{ap.ip}/  →  200 OK  ({ap.type} web UI)\n{auth}"
+        return f"GET http://{ap.ip}/  →  200 OK  (interfaz web de {ap.type})"
+
+    # ---------- DoS ----------
+    def _dos(self, args):
+        if not args: return "uso: dos <ip>"
+        ap = self._find(args[0])
+        if not ap: return f"dos: {args[0]}: host desconocido"
+        if not self._reachable(ap):
+            _, reason, _ = self.posture()
+            return f"dos {ap.ip}: host no alcanzable ({reason})."
+        # CONSECUENCIA REAL por categoría
+        c = ap.category
+        if c in ("motor", "pump", "machine", "scada", "server", "mes", "historian"):
+            self.plant.apply_equipment_action(ap.id, ap.type, "STOP")
+        elif c == "plc":
+            self.plant.apply_equipment_action(ap.id, ap.type, "STOP")
+        elif c == "sensor":
+            self.plant.apply_equipment_action(ap.id, ap.type, "FAULT")
+        elif c == "valve":
+            self.plant.apply_equipment_action(ap.id, ap.type, "CLOSE")
+        else:
+            ap.status = "OFFLINE"; ap.activity = "attack"
+        self.plant.add_event("DOS_ATTACK", "CRITICAL", ap.id, f"Inundación SYN contra {ap.id} desde {self.ip}")
+        return (f"dos {ap.ip}  (SYN flood, 50k pps)\n"
+                f"  [!] {ap.id} dejó de responder — denegación de servicio.\n"
+                f"  [!] Consecuencia real en el proceso + alarma crítica en el SIEM.")
+
+    # ---------- Fuerza bruta ----------
+    def _hydra(self, args):
+        if len(args) < 1: return "uso: hydra <ip> <servicio>  (ssh/http/rdp/ftp)"
+        ap = self._find(args[0])
+        if not ap: return f"hydra: {args[0]}: host desconocido"
+        svc = (args[1] if len(args) > 1 else "ssh").lower()
+        app = {"ssh":"ssh","http":"web-browsing","rdp":"ms-rdp","ftp":"ftp"}.get(svc, svc)
+        if not self._allowed(ap, app, log=True):
+            _, reason, _ = self.posture()
+            return f"hydra {ap.ip} {svc}: servicio filtrado por el firewall ({reason})."
+        self.plant.add_event("BRUTEFORCE", "HIGH", ap.id, f"Fuerza bruta {svc} contra {ap.id} desde {self.ip}")
+        return (f"Hydra v9.5 — {svc}://{ap.ip}\n"
+                f"  [ATTEMPT] admin:admin ...\n"
+                f"  [22][{svc}] host: {ap.ip}   login: admin   password: admin\n"
+                f"  [+] 1 de 1 objetivo completado — credenciales débiles encontradas.")
+
+    # ---------- MITM ----------
+    def _mitm(self, args):
+        if len(args) < 2: return "uso: arpspoof <ip1> <ip2>"
+        a, b = self._find(args[0]), self._find(args[1])
+        if not a or not b: return "arpspoof: uno de los hosts no existe"
+        self.plant.add_event("MITM", "HIGH", a.id, f"ARP spoofing {a.id} <-> {b.id} desde {self.ip}")
+        return (f"arpspoof: interceptando {a.ip} <-> {b.ip}\n"
+                f"  [+] Envenenando tablas ARP...\n"
+                f"  [+] Tráfico {a.id}<->{b.id} redirigido por {self.ip}.\n"
+                f"  >> Ahora puedes leer/alterar la comunicación entre ambos.")
+
+    # =========================================================
+    # EJECUCIÓN DE SCRIPTS DEL USUARIO (sandbox)
+    # =========================================================
+    def run_script(self, text):
+        """Ejecuta un script propio: variables + comandos del lab + traducción
+        de idioms de Python (pymodbus/snap7/requests) a efectos del lab.
+        Nunca ejecuta código del host."""
+        out = ["[*] Ejecutando script en el sandbox del laboratorio...", ""]
+        variables = {}
+        last_ip = None
+        CMDS = ("ifconfig","whoami","ping","nmap","plcscan","s7scan","s7-stop","s7stop",
+                "modbus-read","modbus-write","opcua-browse","opcua","curl","wget","hmi-login",
+                "dos","ddos","flood","hydra","bruteforce","arpspoof","mitm","ettercap","help","clear")
+        for raw in (text or "").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith("//"):
+                continue
+            # asignación de variable  NOMBRE = valor
+            m = re.match(r"^([A-Za-z_]\w*)\s*=\s*(.+)$", line)
+            if m and m.group(1).lower() not in CMDS and "(" not in m.group(2):
+                variables[m.group(1)] = m.group(2).strip().strip("\"'")
+                out.append(f"[var] {m.group(1)} = {variables[m.group(1)]}")
+                continue
+            # sustitución de variables $VAR / {VAR}
+            for k, v in variables.items():
+                line = line.replace(f"${k}", v).replace("{" + k + "}", v)
+            # recordar la última IP vista
+            ipm = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", line)
+            if ipm: last_ip = ipm.group(1)
+            # ¿ya es un comando del lab?
+            first = line.split()[0].lower() if line.split() else ""
+            if first in CMDS:
+                out.append(f"root@kali:~# {line}")
+                res = self.execute(line)
+                if res != "__CLEAR__":
+                    out.append(res)
+                continue
+            # traducir idioms de Python a comandos del lab
+            mapped = self._map_python(line, last_ip)
+            if mapped:
+                out.append(f"root@kali:~# {mapped}")
+                out.append(self.execute(mapped))
+            else:
+                out.append(f"[py] {line}   (línea no ejecutable en sandbox, ignorada)")
+        out.append("")
+        out.append("[*] Script finalizado.")
+        return "\n".join(out)
+
+    def _map_python(self, line, last_ip):
+        l = line
+        # pymodbus: client.write_register(addr, value)
+        m = re.search(r"write_register\s*\(\s*(\d+)\s*,\s*(\d+)", l)
+        if m and last_ip: return f"modbus-write {last_ip} {m.group(1)} {m.group(2)}"
+        m = re.search(r"read_(?:holding_registers|register)\s*\(\s*(\d+)", l)
+        if m and last_ip: return f"modbus-read {last_ip} {m.group(1)}"
+        # snap7 / S7: plc.stop(), cpu stop
+        if re.search(r"\.stop\s*\(\)|s7.*stop|cpu.*stop", l, re.I) and last_ip:
+            return f"s7-stop {last_ip}"
+        # requests.get('http://ip')
+        m = re.search(r"https?://([\d.]+)", l)
+        if m and re.search(r"requests\.|urlopen|curl|get\(", l, re.I):
+            return f"curl {m.group(1)}"
+        # socket.connect((ip, port))
+        m = re.search(r"connect\s*\(\s*\(?\s*['\"]([\d.]+)['\"]\s*,\s*(\d+)", l)
+        if m: return f"nmap -sV {m.group(1)}"
+        return None

@@ -478,6 +478,8 @@ class Plant:
         ap = self.assets_runtime.get(asset_id)
         if ap is None:
             return "IT"
+        if getattr(ap, "zone_override", None):
+            return ap.zone_override
         if ap.category in self._OT_CATS:                     return "OT"
         if ap.category in ("historian", "mes", "server", "gateway"): return "DMZ"
         if ap.category == "workstation":                     return "IT"
@@ -552,9 +554,28 @@ class Plant:
                 break
         return health
 
+    def set_segmentation(self, placements):
+        """Asigna zonas (IT/DMZ/OT) a activos desde la vista Purdue.
+        Cambia la segmentación real: afecta firewall y atacante."""
+        applied = 0
+        for aid, zone in (placements or {}).items():
+            ap = self.assets_runtime.get(aid)
+            if ap is None:
+                continue
+            z = str(zone).upper()
+            ap.zone_override = z if z in ("IT", "DMZ", "OT") else None
+            applied += 1
+        self.add_event("SEGMENTATION_CHANGE", "INFO", "PURDUE",
+                       f"Segmentación actualizada: {applied} activos reubicados")
+        return {"applied": applied}
+
     def attacker_exec(self, command):
         """Ejecuta un comando de la consola Kali contra la planta."""
         return self.attacker.execute(command)
+
+    def attacker_run_script(self, script):
+        """Ejecuta un script propio del usuario en el sandbox del atacante."""
+        return self.attacker.run_script(script)
 
     def apply_equipment_action(
         self, asset_id, asset_type="", action="", value=None,

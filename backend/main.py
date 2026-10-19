@@ -61,9 +61,17 @@ class AttackerCommand(BaseModel):
     command: str
 
 
+class AttackerScript(BaseModel):
+    script: str
+
+
 class FirewallCommit(BaseModel):
     rules: list = []
     mode:  Optional[str] = None
+
+
+class SegmentationRequest(BaseModel):
+    placements: dict = {}
 @app.get("/")
 def root():
     return {
@@ -331,6 +339,12 @@ def get_asset_state(asset_id: str):
     return ap.to_dict()
 
 
+@app.post("/api/segmentation")
+def set_segmentation(request: SegmentationRequest):
+    """Aplica la segmentación (zonas por activo) definida en la vista Purdue."""
+    return plant.set_segmentation(request.placements)
+
+
 @app.post("/api/attacker/exec")
 def attacker_exec(request: AttackerCommand):
     """Ejecuta un comando de la consola Kali simulada."""
@@ -339,6 +353,14 @@ def attacker_exec(request: AttackerCommand):
         "output": plant.attacker_exec(request.command),
         "posture": {"segmented": seg and not pivot, "reason": reason, "pivot": pivot},
     }
+
+
+@app.post("/api/attacker/run")
+def attacker_run(request: AttackerScript):
+    """Ejecuta un script propio del usuario en el sandbox del atacante."""
+    seg, reason, pivot = plant.attacker.posture()
+    return {"output": plant.attacker_run_script(request.script),
+            "posture": {"segmented": seg and not pivot, "reason": reason, "pivot": pivot}}
 
 
 @app.get("/api/attacker/info")

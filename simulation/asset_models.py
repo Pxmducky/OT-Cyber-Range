@@ -24,33 +24,44 @@ CRIT_BY_CAT = {
 def categorize(asset_type: str) -> str:
     t = (asset_type or "").upper()
     # red / acceso (antes que genéricos)
-    if "EWON" in t or "VPN" in t or "REMOTE ACCESS" in t or "TELECONTROL" in t:
+    if "EWON" in t or "VPN" in t or "REMOTE ACCESS" in t or "ACCESO REMOTO" in t or "TELECONTROL" in t:
         return "gateway"
-    if "FIREWALL" in t or "MGUARD" in t or "NGFW" in t or "IPS" in t:
+    if "FIREWALL" in t or "MGUARD" in t or "NGFW" in t or "IPS" in t or "PALO ALTO" in t or "FORTINET" in t:
         return "firewall"
-    if "SWITCH" in t or "ROUTER" in t:
+    if "SWITCH" in t or "ROUTER" in t or "CONMUTADOR" in t or "RUTEADOR" in t:
         return "switch"
     if "GATEWAY" in t:                                   return "gateway"
     # control
-    if "PLC" in t or "RTU" in t or "CONTROLLER" in t or "DCS" in t:
+    if "PLC" in t or "RTU" in t or "CONTROLLER" in t or "CONTROLADOR" in t or "DCS" in t or "SAFETY" in t:
         return "plc"
     # máquinas / actuadores
-    if "CNC" in t or "ROBOT" in t or "MACHINE" in t:     return "machine"
-    if any(k in t for k in ("MOTOR", "DRIVE", "VFD")):   return "motor"
+    if "CNC" in t or "ROBOT" in t or "MACHINE" in t or "MAQUINA" in t or "CELDA" in t or "MAQUINADO" in t:
+        return "machine"
+    if any(k in t for k in ("MOTOR", "DRIVE", "VFD", "VARIADOR", "SERVO")):
+        return "motor"
     if "PUMP" in t or "BOMBA" in t:                      return "pump"
-    if "VALVE" in t or "VALV" in t:                      return "valve"
+    if "VALVE" in t or "VALV" in t or "ELECTROVAL" in t or "ACTUADOR" in t:
+        return "valve"
     # instrumentación
-    if any(k in t for k in ("SENSOR", "TRANSMIT", "ANALYZER",
-                            "PRESSURE", "TEMPERATURE", "FLOW", "LEVEL")):
+    if any(k in t for k in ("SENSOR", "TRANSMIT", "TRANSMISOR", "ANALYZER", "ANALIZADOR",
+                            "ENCODER", "INDUCTIVO", "FOTOCEL", "FOTOEL", "DETECTOR",
+                            "VISION", "VISIÓN", "CAMARA", "CÁMARA", "INSTRUMENT",
+                            "PRESSURE", "PRESION", "PRESIÓN", "TEMPERATURE", "TEMPERATURA",
+                            "FLOW", "FLUJO", "LEVEL", "NIVEL", "PROXIM")):
         return "sensor"
     # cómputo / supervisión
-    if "HMI" in t or "PANEL" in t:                       return "hmi"
+    if "HMI" in t or "PANEL" in t or "OPERADOR" in t:    return "hmi"
     if "SCADA" in t:                                     return "scada"
-    if "HISTORIAN" in t or "HIST" in t:                  return "historian"
+    if "HISTORIAN" in t or "HISTORIADOR" in t or "HIST" in t: return "historian"
     if "MES" in t:                                       return "mes"
-    if any(k in t for k in ("WORKSTATION", "ENGINEERING", "EWS", "IPC")):
+    if any(k in t for k in ("WORKSTATION", "ENGINEERING", "INGENIERIA", "INGENIERÍA",
+                            "ESTACION", "ESTACIÓN", "EWS", "IPC")):
         return "workstation"
-    if "SERVER" in t:                                    return "server"
+    if "SERVER" in t or "SERVIDOR" in t or "JUMP" in t or "BASTION" in t or "BASTIÓN" in t:
+        return "server"
+    # E/S distribuida de campo
+    if "REMOTE I/O" in t or "REMOTE IO" in t or "IO REMOTO" in t or "E/S REMOTA" in t:
+        return "sensor"
     return "generic"
 
 
@@ -62,6 +73,7 @@ class AssetProcess:
         self.category = categorize(self.type)
         self.status   = "ONLINE"
         self.activity = "normal"
+        self.zone_override = None   # zona asignada manualmente en la vista Purdue
         self.criticality = self._criticality(asset)
         # metadatos para enumeración del atacante (nmap/plcscan)
         self.ip        = asset.get("ip") or asset.get("ipAddress") or ""
