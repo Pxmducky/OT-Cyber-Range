@@ -8,7 +8,9 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const API_URL = "http://127.0.0.1:8000";
+//const API_URL = "http://127.0.0.1:8000";
+import { API_URL } from "../utils/config";
+
 const C = {
   bg:"#05070d", term:"#02060c", panel:"#0a111c", border:"#17212f",
   green:"#7CFC9A", dim:"#4b5563", text:"#cbd5e1", amber:"#f59e0b",
@@ -18,32 +20,44 @@ const C = {
 /* ── Escenarios: documentación + comandos de EJEMPLO con marcador <IP> ── */
 const SCENARIOS = [
   {
-    id:"recon", name:"1 · Reconocimiento", sev:"MEDIUM", color:C.amber,
-    objective:"Descubrir los activos OT y sus servicios desde la red corporativa.",
-    context:"Kali parte de IT. Con buena segmentación, los OT no responderán.",
+    id:"recon", name:"1 · Reconocimiento de red", sev:"HIGH", color:C.amber, mitre:"T0846 Remote System Discovery",
+    objective:"Descubrir los activos OT y sus servicios industriales desde la red corporativa.",
+    context:"Kali parte de IT. Con buena segmentación los OT no responderán. -sS = SYN stealth (muchos firewalls no lo registran).",
     steps:[
       { cmd:"ifconfig", explain:"Tu dirección y zona." },
-      { cmd:"nmap -sn <RED>  (ej: 172.16.0.0)", explain:"Barrido de hosts." },
-      { cmd:"nmap -sV <IP>", explain:"Puertos y servicios de un host." },
+      { cmd:"nmap -sn <RED>/24", explain:"Barrido de hosts (ping sweep)." },
+      { cmd:"nmap -sS -sV -O -p 102,502,44818,4840 <RED>/24 --open", explain:"Solo puertos industriales S7/Modbus/EIP/OPC-UA." },
     ],
-    detection:"SIEM: RECON_NMAP.", impact:"Habilita las siguientes fases.",
+    detection:"SIEM: RECON_NMAP (HIGH).", impact:"Reconocimiento; habilita las siguientes fases.",
     remediation:"Segmentar con firewall ENFORCING IT↔OT; permitir solo lo necesario.",
   },
   {
-    id:"enum", name:"2 · Enumeración (PLC / OPC-UA)", sev:"HIGH", color:"#f97316",
-    objective:"Identificar marca/firmware del PLC y navegar servidores OPC-UA.",
-    context:"Solo si el objetivo es alcanzable. Si está filtrado, primero debilita la seguridad.",
+    id:"enum", name:"2 · Enumeración S7comm", sev:"HIGH", color:"#f97316", mitre:"T0861 Point & Tag Identification",
+    objective:"Leer CPU, firmware y EXFILTRAR variables de proceso (temp/presión/motor/válvula) sin autenticación.",
+    context:"S7comm (102/tcp) históricamente no exige contraseña si el 'access protection' del CPU no se configuró en TIA Portal.",
     steps:[
-      { cmd:"plcscan <IP-PLC>", explain:"Enumera el PLC (S7comm 102)." },
+      { cmd:"s7-info <IP-PLC>", explain:"Sesión S7 + lectura de SZL/DB (exfiltra el proceso)." },
       { cmd:"nmap --script s7-info <IP-PLC>", explain:"Equivalente con NSE." },
       { cmd:"opcua-browse <IP-SCADA>", explain:"Enumera nodos OPC-UA (4840)." },
     ],
-    detection:"SIEM: RECON_PLC_ENUM / RECON_OPCUA (HIGH).",
-    impact:"Exposición de versión y nodos escribibles.",
+    detection:"SIEM: S7COMM_UNAUTHORIZED_ACCESS + alarma S7_RECON (CRITICAL).",
+    impact:"Con los datos exactos del proceso el atacante dimensiona el sabotaje.",
     remediation:"Bloquear 102/4840 desde zonas no autorizadas; cifrado y contraseña de CPU.",
   },
   {
-    id:"access", name:"3 · Acceso y credenciales", sev:"HIGH", color:C.red,
+    id:"inject", name:"3 · Inyección de código en PLC", sev:"CRITICAL", color:C.red, mitre:"T0836 Modify Parameter",
+    objective:"Descargar un OB1 malicioso al PLC (estilo Stuxnet) que sabotea el proceso y suprime alarmas.",
+    context:"S7comm permite descargar programas sin autenticación si el CPU no está protegido. Pone el CPU en STOP, sube el bloque y vuelve a RUN.",
+    steps:[
+      { cmd:"s7-info <IP-PLC>", explain:"1) Primero enumera y confirma que es alcanzable." },
+      { cmd:"s7-inject <IP-PLC>", explain:"2) Inyecta OB1: motor=0, válvula=100%, alarmas suprimidas." },
+    ],
+    detection:"SIEM: S7COMM_CODE_DOWNLOAD + alarmas CODE_INJECTION / MOTOR_SABOTAGE / VALVE_SABOTAGE / SAFETY_SUPPRESSED.",
+    impact:"Sabotaje físico real; el HMI muestra 'normal' mientras la planta está en emergencia.",
+    remediation:"Activar access protection del CPU con contraseña, firmar programas, restringir 102/tcp, monitorear descargas.",
+  },
+  {
+    id:"access", name:"4 · Acceso y credenciales", sev:"HIGH", color:C.red,
     objective:"Entrar a HMIs/servidores web y romper credenciales débiles.",
     context:"Muchos HMIs usan admin/admin. Útil contra HMI, SCADA, eWON.",
     steps:[
@@ -56,7 +70,7 @@ const SCENARIOS = [
     remediation:"Cambiar credenciales por defecto, MFA, deshabilitar servicios web no usados.",
   },
   {
-    id:"weaken", name:"4 · Debilitar / pivotar", sev:"HIGH", color:C.red,
+    id:"weaken", name:"5 · Debilitar / pivotar", sev:"HIGH", color:C.red,
     objective:"Conseguir acceso a OT cuando está segmentada.",
     context:"Si nmap marca los OT como FILTRADOS: pon el firewall en BYPASS, agrega una regla PERMIT, o compromete el eWON para pivotar.",
     steps:[
@@ -69,7 +83,7 @@ const SCENARIOS = [
     remediation:"Nunca BYPASS; aislar el eWON, MFA, acceso bajo demanda.",
   },
   {
-    id:"sabotage", name:"5 · Sabotaje del proceso", sev:"CRITICAL", color:C.red,
+    id:"sabotage", name:"6 · Sabotaje del proceso", sev:"CRITICAL", color:C.red, mitre:"T0831 / T0836 Manipulation of Control",
     objective:"Detener/alterar el proceso (prueba de concepto). ¡Consecuencias reales!",
     context:"Con el objetivo alcanzable, estas acciones mueven la planta de verdad.",
     steps:[
@@ -82,7 +96,7 @@ const SCENARIOS = [
     remediation:"Protección de CPU, ACLs, monitoreo de comandos, restaurar desde respaldo.",
   },
   {
-    id:"script", name:"6 · Script propio", sev:"INFO", color:C.cyan,
+    id:"script", name:"7 · Script propio", sev:"INFO", color:C.cyan,
     objective:"Cargar y ejecutar tu propio código contra el laboratorio.",
     context:"Abre el panel 'Script'. Puedes escribir variables, comandos del lab, e incluso idioms de Python (pymodbus/snap7/requests) que se traducen a efectos reales — todo en sandbox.",
     steps:[
@@ -128,26 +142,38 @@ function downloadDoc(sc) {
   document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 
+/* Estado persistente entre cambios de pantalla (se mantiene en la sesión;
+   se reinicia solo al recargar la página o con 'clear'). */
+const DEFAULT_LINES = [
+  { t:"Kali GNU/Linux Rolling — OT Cyber Range (laboratorio aislado)", k:"sys" },
+  { t:"'help' lista los comandos · botón 'Script' para cargar tu propio código.", k:"dim" },
+  { t:"Los ejemplos usan <IP>: haz clic para insertarlos y reemplaza por tu IP real.", k:"dim" },
+];
+const SESSION = { lines:null, history:[], hIdx:-1, input:"", scriptText:null, scenarioId:null };
+
 export default function AttackerConsole({ plant, alarms = [], labData }) {
-  const [lines, setLines] = useState([
-    { t:"Kali GNU/Linux Rolling — OT Cyber Range (laboratorio aislado)", k:"sys" },
-    { t:"'help' lista los comandos · botón 'Script' para cargar tu propio código.", k:"dim" },
-    { t:"Los ejemplos usan <IP>: haz clic para insertarlos y reemplaza por tu IP real.", k:"dim" },
-  ]);
-  const [input, setInput]   = useState("");
-  const [history, setHistory] = useState([]);
-  const [hIdx, setHIdx]     = useState(-1);
+  const [lines, setLines] = useState(() => SESSION.lines ?? DEFAULT_LINES);
+  const [input, setInput]   = useState(() => SESSION.input);
+  const [history, setHistory] = useState(() => SESSION.history);
+  const [hIdx, setHIdx]     = useState(SESSION.hIdx);
   const [busy, setBusy]     = useState(false);
   const [posture, setPosture] = useState(null);
-  const [scenario, setScenario] = useState(SCENARIOS[0]);
+  const [scenario, setScenario] = useState(() => SCENARIOS.find(x=>x.id===SESSION.scenarioId) || SCENARIOS[0]);
   const [restoring, setRestoring] = useState(false);
   const [showScript, setShowScript] = useState(false);
-  const [scriptText, setScriptText] = useState(SCRIPT_EXAMPLE);
+  const [scriptText, setScriptText] = useState(() => SESSION.scriptText ?? SCRIPT_EXAMPLE);
   const termRef = useRef(null);
   const inputRef = useRef(null);
   const fileRef = useRef(null);
 
   const push = useCallback((arr)=>setLines(l=>[...l, ...arr]), []);
+
+  // Persistir la actividad entre cambios de pantalla
+  useEffect(()=>{ SESSION.lines = lines; }, [lines]);
+  useEffect(()=>{ SESSION.history = history; SESSION.hIdx = hIdx; }, [history, hIdx]);
+  useEffect(()=>{ SESSION.input = input; }, [input]);
+  useEffect(()=>{ SESSION.scriptText = scriptText; }, [scriptText]);
+  useEffect(()=>{ SESSION.scenarioId = scenario.id; }, [scenario]);
 
   useEffect(() => {
     let t, cancel=false;
@@ -239,6 +265,7 @@ export default function AttackerConsole({ plant, alarms = [], labData }) {
               <div style={{ flex:1 }}/>
               <button onClick={()=>downloadDoc(scenario)} style={{ background:`${C.cyan}18`, border:`1px solid ${C.cyan}`, color:C.cyan, padding:"3px 10px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:C.mono, fontWeight:700 }}>⬇ Descargar</button>
             </div>
+            {scenario.mitre && <div style={{ color:C.red, fontSize:9, fontFamily:C.mono, marginBottom:6, border:`1px solid ${C.red}44`, borderRadius:4, padding:"2px 6px", display:"inline-block" }}>MITRE {scenario.mitre}</div>}
             <Doc label="Objetivo" text={scenario.objective}/>
             <Doc label="Contexto" text={scenario.context}/>
             <div style={{ color:C.dim, fontSize:9, fontFamily:C.mono, margin:"8px 0 4px", letterSpacing:".08em" }}>PASOS (clic = insertar)</div>

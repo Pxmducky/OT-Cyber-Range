@@ -5,8 +5,8 @@
  * colorear la topología (líneas + contorno de los equipos).
  */
 
-const API_URL = "http://127.0.0.1:8000";
-
+//const API_URL = "http://127.0.0.1:8000";
+import { API_URL } from "./config";
 /**
  * Envía una acción de equipo al backend.
  * @returns el estado completo de la planta (incluye process, events, activity…)

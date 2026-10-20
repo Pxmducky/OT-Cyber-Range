@@ -29,6 +29,7 @@ import SIEMPage from "./components/SIEMPage";
 import AttackerConsole from "./components/AttackerConsole";
 import RecoveryConsole from "./components/RecoveryConsole";
 import { loadTopology } from "./utils/otActions";
+import { WS_URL, SID } from "./utils/config";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -250,7 +251,7 @@ function App() {
 
     const connect = () => {
       socket = new WebSocket(
-        "ws://127.0.0.1:8000/ws/plant"
+        `${WS_URL}/ws/plant?sid=${SID}`
       );
 
       socket.onopen = () => {

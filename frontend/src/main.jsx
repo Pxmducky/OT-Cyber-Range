@@ -4,7 +4,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 
 import "./App.css";
-
+import { WS_URL, SID } from "./utils/config";
 
 ReactDOM.createRoot(
   document.getElementById("root")

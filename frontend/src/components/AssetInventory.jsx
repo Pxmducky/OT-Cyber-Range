@@ -8,7 +8,8 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 
-const API_URL = "http://127.0.0.1:8000";
+//const API_URL = "http://127.0.0.1:8000";
+import { API_URL } from "../utils/config";
 const C = {
   bg:"#070b12", panel:"#0d1520", card:"#0a1018", text:"#e2e8f0", dim:"#64748b", border:"#1e293b",
   accent:"#22d3ee", green:"#22c55e", amber:"#f59e0b", red:"#ef4444", purple:"#818cf8",

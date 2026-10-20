@@ -8,7 +8,8 @@
 
 import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from "react";
 
-const API_URL = "http://127.0.0.1:8000";
+//const API_URL = "http://127.0.0.1:8000";
+import { API_URL } from "../utils/config";
 const C = {
   bg:"#070b12", text:"#e2e8f0", dim:"#64748b", border:"#1e293b",
   mono:"'Consolas','Courier New',monospace", sans:"'Segoe UI',sans-serif",

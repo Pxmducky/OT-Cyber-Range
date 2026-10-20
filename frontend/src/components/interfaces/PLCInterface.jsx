@@ -17,8 +17,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { equipmentAction } from "../../utils/otActions";
 
-const API_URL = "http://127.0.0.1:8000";
-
+//const API_URL = "http://127.0.0.1:8000";
+import { API_URL } from "../../utils/config";
 /* ── Paleta ── */
 const C = {
   bg:     "#05080f", bg2: "#080e18", bg3: "#0d1520",

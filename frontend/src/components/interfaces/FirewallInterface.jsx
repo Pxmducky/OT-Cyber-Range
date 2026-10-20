@@ -8,7 +8,8 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const API_URL = "http://127.0.0.1:8000";
+//const API_URL = "http://127.0.0.1:8000";
+import { API_URL } from "../../utils/config";
 
 const C = {
   bg:"#1b1b1b", panel:"#252526", bar:"#2e2e2e", border:"#3a3a3a",

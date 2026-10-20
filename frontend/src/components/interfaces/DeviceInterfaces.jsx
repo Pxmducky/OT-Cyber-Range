@@ -8,7 +8,7 @@
  * (POST /api/equipment/action). Si el inventario aún no se cargó al backend,
  * cae a una simulación local para no quedar en blanco.
  */
-
+import { API_URL } from "../../utils/config";
 import { useState, useEffect, useRef } from "react";
 import { equipmentAction, fetchAssetState, fetchPlant, fetchPlcProgram, plcDownloadProgram, plcRunProgram, plcStopProgram, ackAlarm, protoPort, protoSvc, SAFE_PLC_PROGRAM, MALICIOUS_PLC_PROGRAM } from "../../utils/otActions";
 
