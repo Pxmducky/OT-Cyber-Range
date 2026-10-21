@@ -259,6 +259,9 @@ class Plant:
         self.attacker       = AttackerConsole(self)
         self.firewalls      = {}   # asset_id -> Firewall
         self._fw_tick       = 0
+        # Persistencia entre recargas del navegador
+        self.lab_data       = None # labData original del Excel (lo pide el frontend al refrescar)
+        self.purdue_bands   = {}   # asset_id -> banda Purdue (IT/DMZ/L3/L2/L1/L0) del alumno
 
         self.add_event(
             event_type="SYSTEM_START",
@@ -439,9 +442,11 @@ class Plant:
             if self.activity[aid]["ttl"] <= 0:
                 del self.activity[aid]
 
-    def load_topology(self, assets=None, connections=None, variables=None):
+    def load_topology(self, assets=None, connections=None, variables=None, lab_data=None):
         """Construye un proceso por activo a partir del inventario del Excel."""
         assets = assets or []
+        self.lab_data = lab_data      # se guarda para restaurar el frontend tras refrescar
+        self.purdue_bands = {}        # un inventario nuevo empieza con Purdue vacío
         self.assets_runtime = {}
         for a in assets:
             aid = str(a.get("id", "")).strip()
@@ -554,9 +559,17 @@ class Plant:
                 break
         return health
 
-    def set_segmentation(self, placements):
+    _PURDUE_BANDS = {"IT", "DMZ", "L3", "L2", "L1", "L0"}
+
+    def set_segmentation(self, placements, bands=None):
         """Asigna zonas (IT/DMZ/OT) a activos desde la vista Purdue.
-        Cambia la segmentación real: afecta firewall y atacante."""
+        Cambia la segmentación real: afecta firewall y atacante.
+        'bands' guarda el nivel Purdue exacto para restaurar la vista."""
+        if bands is not None:
+            self.purdue_bands = {
+                aid: str(b).upper() for aid, b in bands.items()
+                if aid in self.assets_runtime and str(b).upper() in self._PURDUE_BANDS
+            }
         applied = 0
         for aid, zone in (placements or {}).items():
             ap = self.assets_runtime.get(aid)
@@ -568,6 +581,15 @@ class Plant:
         self.add_event("SEGMENTATION_CHANGE", "INFO", "PURDUE",
                        f"Segmentación actualizada: {applied} activos reubicados")
         return {"applied": applied}
+
+    def get_topology(self):
+        """Inventario cargado + diseño Purdue, para que el frontend se restaure
+        al refrescar la página sin volver a importar el Excel."""
+        return {
+            "loaded": bool(self.assets_runtime) and self.lab_data is not None,
+            "labData": self.lab_data,
+            "purdueBands": self.purdue_bands,
+        }
 
     def attacker_exec(self, command):
         """Ejecuta un comando de la consola Kali contra la planta."""

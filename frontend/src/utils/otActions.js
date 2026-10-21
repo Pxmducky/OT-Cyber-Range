@@ -60,12 +60,46 @@ export function connActivity(activity, a, b) {
   return best;
 }
 
-/* ── Carga de topología: envía el inventario del Excel al backend ── */
-export async function loadTopology(assets = [], connections = [], variables = []) {
+export async function loadTopology(assets = [], connections = [], variables = [], labData = null) {
   const res = await fetch(`${API_URL}/api/plant/load`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ assets, connections, variables }),
+    body: JSON.stringify({ assets, connections, variables, lab_data: labData }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+/* ── Persistencia entre recargas de página ──────────────────────────────
+ * Fuente de verdad: el backend (guarda el Excel, firewall, PLC, zonas…).
+ * Respaldo: localStorage, por si el backend se reinició y perdió la planta. */
+export const LAB_KEY    = "ot_lab_data";
+export const PURDUE_KEY = "ot_purdue_segmentation";   // { placements, bands }
+
+export function readLocal(key) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
+  catch { return null; }
+}
+export function saveLocal(key, value) {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* cuota llena o storage bloqueado: el backend sigue siendo la fuente */ }
+}
+
+/* Inventario + diseño Purdue que tiene cargados el backend */
+export async function fetchTopology() {
+  const res = await fetch(`${API_URL}/api/plant/topology`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();   // { loaded, labData, purdueBands }
+}
+
+/* Aplica la segmentación Purdue en el backend (zonas + bandas) */
+export async function postSegmentation(placements = {}, bands = null) {
+  const res = await fetch(`${API_URL}/api/segmentation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ placements, bands }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();

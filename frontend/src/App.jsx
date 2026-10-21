@@ -1,4 +1,3 @@
-
 import {
   useEffect,
   useState,
@@ -14,7 +13,6 @@ import {
   Network,
   Radio,
   Shield,
-  ShieldCheck,
   Terminal,
   Boxes,
   GitBranch,
@@ -27,8 +25,10 @@ import DynamicPlant from "./components/DynamicPlant";
 import PurduePage from "./components/PurduePage";
 import SIEMPage from "./components/SIEMPage";
 import AttackerConsole from "./components/AttackerConsole";
-import RecoveryConsole from "./components/RecoveryConsole";
-import { loadTopology } from "./utils/otActions";
+import {
+  loadTopology, fetchTopology, postSegmentation,
+  readLocal, saveLocal, LAB_KEY, PURDUE_KEY,
+} from "./utils/otActions";
 import { WS_URL, SID } from "./utils/config";
 
 const API_URL = "http://127.0.0.1:8000";
@@ -241,7 +241,8 @@ function App() {
   const [plant, setPlant] = useState(null);
   const [activePage, setActivePage] = useState("plant");
   const [connected, setConnected] = useState(false);
-  const [labData, setLabData] = useState(null);
+  // Se inicializa desde localStorage para que no "parpadee" al refrescar
+  const [labData, setLabData] = useState(() => readLocal(LAB_KEY));
   const [showImporter, setShowImporter] = useState(false);
   const [alarms, setAlarms] = useState([]);
 
@@ -304,6 +305,39 @@ function App() {
       }
     };
   }, []);
+
+  /* ── Restaurar inventario al refrescar / reconectar ──────────────────
+   * 1) Si el backend ya tiene la planta, se usa la suya (conserva firewall,
+   *    PLC, segmentación y demás cambios hechos en la sesión).
+   * 2) Si el backend se reinició y la perdió, se le reenvía el Excel y la
+   *    segmentación guardados en localStorage. */
+  useEffect(() => {
+    if (!connected) return;
+    let cancel = false;
+    (async () => {
+      try {
+        const topo = await fetchTopology();
+        if (cancel) return;
+        if (topo.loaded && topo.labData) {
+          setLabData(topo.labData);
+          saveLocal(LAB_KEY, topo.labData);
+          return;
+        }
+        const local = readLocal(LAB_KEY);
+        if (!local) return;
+        await loadTopology(
+          local.assets || [], local.connections || [], local.variables || [], local
+        );
+        const seg = readLocal(PURDUE_KEY);
+        if (seg?.placements) {
+          await postSegmentation(seg.placements, seg.bands || null);
+        }
+      } catch (error) {
+        console.error("Restore topology error:", error);
+      }
+    })();
+    return () => { cancel = true; };
+  }, [connected]);
 
   useEffect(() => {
     const loadAlarms = async () => {
@@ -476,31 +510,6 @@ function App() {
             }
           />
 
-          <NavButton
-            icon={<ShieldCheck size={17} />}
-            label="Recovery"
-            active={
-              activePage === "recovery"
-            }
-            badge={
-              alarms.some(
-                alarm =>
-                  alarm.active &&
-                  alarm.severity ===
-                    "CRITICAL"
-              )
-                ? alarms.filter(
-                    alarm =>
-                      alarm.active &&
-                      alarm.severity ===
-                        "CRITICAL"
-                  ).length
-                : null
-            }
-            onClick={() =>
-              setActivePage("recovery")
-            }
-          />
         </div>
 
         <div className="sidebar-bottom">
@@ -551,10 +560,7 @@ function App() {
                       : activePage ===
                           "attacker"
                         ? "Attacker Workstation"
-                        : activePage ===
-                            "recovery"
-                          ? "Incident Response"
-                          : activePage}
+                        : activePage}
             </h1>
           </div>
 
@@ -595,7 +601,7 @@ function App() {
                     ? "plant-status running"
                     : "plant-status stopped"
                 }
-              >import { loadTopology } from "./utils/otActions";
+              >
                 <span />
 
                 <div>
@@ -708,10 +714,13 @@ function App() {
                   );
 
                   setLabData(data);
+                  saveLocal(LAB_KEY, data);
+                  saveLocal(PURDUE_KEY, null); // inventario nuevo = Purdue nuevo
                   loadTopology(
                     data.assets || [],
                     data.connections || [],
-                    data.variables || []
+                    data.variables || [],
+                    data
                   ).catch(() => {});
                   setShowImporter(false);
                 }}
@@ -828,16 +837,6 @@ function App() {
           />
         )}
 
-        {activePage === "recovery" && (
-          <RecoveryConsole
-            plant={plant}
-            alarms={
-              plant?.alarms?.active ??
-              []
-            }
-            equipment={equipment}
-          />
-        )}
       </main>
     </div>
   );

@@ -195,8 +195,16 @@ export default function AttackerConsole({ plant, alarms = [], labData }) {
     try {
       const res = await fetch(`${API_URL}/api/attacker/exec`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ command }) });
       const data = await res.json();
-      if (data.output === "__CLEAR__") setLines([]);
-      else push(String(data.output||"").split("\n").map(t=>({ t, k:colorLine(t) })));
+      const out = String(data.output||"");
+      if (out === "__CLEAR__") setLines([]);
+      else if (out.startsWith("__EDIT__")) {
+        const p = out.split("\t");
+        const fname = p[1] || "exploit.sh";
+        setScriptText(p.slice(2).join("\t"));
+        setShowScript(true);
+        push([{ t:`[*] nano ${fname} — edítalo en el panel Script y pulsa ▶ EJECUTAR para correrlo.`, k:"sys" }]);
+      }
+      else push(out.split("\n").map(t=>({ t, k:colorLine(t) })));
       if (data.posture) setPosture(data.posture);
     } catch { push([{ t:"[!] Sin conexión con el backend (inicia uvicorn).", k:"err" }]); }
     finally { setBusy(false); inputRef.current?.focus(); }
@@ -296,11 +304,12 @@ export default function AttackerConsole({ plant, alarms = [], labData }) {
               {segmented?"🔒 SEGMENTADA":"🔓 ABIERTA"} — {posture.reason}
             </span>
           )}
+          <button onClick={()=>{ const txt=lines.map(l=>l.t).join("\n"); navigator.clipboard?.writeText(txt).then(()=>{ push([{t:"[*] Salida copiada al portapapeles.",k:"sys"}]); }).catch(()=>{}); }} style={{ background:`${C.cyan}18`, border:`1px solid ${C.cyan}`, color:C.cyan, padding:"4px 12px", borderRadius:5, cursor:"pointer", fontSize:10, fontFamily:C.mono, fontWeight:700 }}>⧉ Copiar todo</button>
           <button onClick={()=>setShowScript(s=>!s)} style={{ background:`${C.amber}18`, border:`1px solid ${C.amber}`, color:C.amber, padding:"4px 12px", borderRadius:5, cursor:"pointer", fontSize:10, fontFamily:C.mono, fontWeight:700 }}>📜 Script</button>
           <button onClick={restore} disabled={restoring} style={{ background:`${C.cyan}18`, border:`1px solid ${C.cyan}`, color:C.cyan, padding:"4px 12px", borderRadius:5, cursor:"pointer", fontSize:10, fontFamily:C.mono, fontWeight:700 }}>{restoring?"…":"⟲ RESTAURAR"}</button>
         </div>
 
-        <div ref={termRef} onClick={()=>inputRef.current?.focus()}
+        <div ref={termRef} onClick={()=>{ if(!window.getSelection()?.toString()) inputRef.current?.focus(); }}
           style={{ flex:1, overflow:"auto", background:C.term, padding:"12px 16px", fontFamily:C.mono, fontSize:12.5, lineHeight:1.55, cursor:"text" }}>
           {lines.map((l,i)=>(<div key={i} style={{ color:lineColor(l.k), whiteSpace:"pre-wrap", wordBreak:"break-word" }}>{l.t}</div>))}
           <div style={{ display:"flex", alignItems:"center" }}>

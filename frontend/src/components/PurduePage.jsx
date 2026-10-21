@@ -15,6 +15,8 @@ const C = {
   mono:"'Consolas','Courier New',monospace", sans:"'Segoe UI',sans-serif",
 };
 
+import { fetchTopology, postSegmentation, readLocal, saveLocal, PURDUE_KEY } from "../utils/otActions";
+
 const BANDS = [
   { key:"IT",  zone:"IT",  label:"Nivel 4/5 · Enterprise / IT",   color:"#3b82f6" },
   { key:"DMZ", zone:"DMZ", label:"Nivel 3.5 · DMZ Industrial",    color:"#f59e0b" },
@@ -60,11 +62,32 @@ export default function PurduePage({ assets = [], connections = [] }) {
   const applyTimer = useRef(null);
 
   const flash = useCallback((t) => { setMsg(t); setTimeout(()=>setMsg(null), 2500); }, []);
-
   useEffect(() => {
     const d = {}; for (const a of assets) d[a.id] = inferBand(a);
-    setDesigned(d); setPlacement(d);
+    // conservar el diseño del alumno guardado (sobrevive a refrescar la página)
+    const saved = readLocal(PURDUE_KEY)?.bands || {};
+    const p = { ...d };
+    for (const [id, band] of Object.entries(saved)) if (id in d && BAND[band]) p[id] = band;
+    setDesigned(d); setPlacement(p);
   }, [assets]);
+
+  /* el backend es la fuente de verdad del diseño Purdue */
+  useEffect(() => {
+    let cancel = false;
+    fetchTopology().then(t => {
+      const b = t?.purdueBands;
+      if (cancel || !b || !Object.keys(b).length) return;
+      setPlacement(prev => {
+        const next = { ...prev };
+        for (const [id, band] of Object.entries(b)) if (id in next && BAND[band]) next[id] = band;
+        const placements = {};
+        for (const [id, band] of Object.entries(next)) placements[id] = zoneOfBand(band);
+        saveLocal(PURDUE_KEY, { placements, bands: next });
+        return next;
+      });
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, []);
 
   /* estado vivo del activo seleccionado */
   useEffect(() => {
@@ -88,9 +111,10 @@ export default function PurduePage({ assets = [], connections = [] }) {
   const applySegmentation = useCallback((plc) => {
     const placements = {};
     for (const [id, band] of Object.entries(plc)) placements[id] = zoneOfBand(band);
+    saveLocal(PURDUE_KEY, { placements, bands: plc });   // inmediato: sobrevive a F5
     clearTimeout(applyTimer.current);
     applyTimer.current = setTimeout(() => {
-      fetch(`${API_URL}/api/segmentation`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ placements }) }).catch(()=>{});
+      postSegmentation(placements, plc).catch(()=>{});
     }, 300);
   }, []);
 

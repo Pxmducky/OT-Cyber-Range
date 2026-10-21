@@ -520,10 +520,11 @@ export default function DynamicPlant({
     };
     return (
       <EquipmentInterface
-        asset={adapted}
-        plant={{ process: null, events }}
-        events={events}
-        onBack={() => setInterfaceAsset(null)}
+      asset={adapted}
+      labData={labData}
+      plant={{ process: null, events }}
+      events={events}
+      onBack={() => setInterfaceAsset(null)}
       />
     );
   }

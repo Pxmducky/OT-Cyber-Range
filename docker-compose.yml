@@ -1,0 +1,32 @@
+# Levanta el laboratorio + Cloudflare Tunnel con un solo comando:
+#   docker compose up -d --build
+#
+# El lab NO publica puertos al host: solo cloudflared llega a él por la red
+# interna de compose. El participante entra por https://lab.tudominio.com
+services:
+  lab:
+    build: .
+    container_name: ot-cyber-range
+    restart: unless-stopped
+    environment:
+      - PORT=8000
+    expose:
+      - "8000"            # visible solo dentro de la red de compose
+    # Si quieres probar local sin túnel, descomenta:
+    ports:
+    - "8000:8000"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - http2
+      - run
+      - --token
+      - ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - lab

@@ -52,6 +52,7 @@ class EquipmentActionRequest(BaseModel):
 
 
 class LoadTopologyRequest(BaseModel):
+    lab_data:    Optional[dict] = None   # labData completo del Excel (para restaurar al refrescar)
     assets:      list = []
     connections: list = []
     variables:   list = []
@@ -71,8 +72,10 @@ class FirewallCommit(BaseModel):
 
 
 class SegmentationRequest(BaseModel):
+    lab_data:    Optional[dict] = None   # labData completo del Excel (para restaurar al refrescar)
+    bands:      Optional[dict] = None    # asset_id -> banda Purdue (IT/DMZ/L3/L2/L1/L0)
     placements: dict = {}
-@app.get("/")
+@app.get("/api/health")
 def root():
     return {
         "application": "OT Cyber Range",
@@ -328,7 +331,21 @@ def load_topology(request: LoadTopologyRequest):
         connections = request.connections,
         variables   = request.variables,
     )
+@app.post("/api/plant/load")
+def load_topology(request: LoadTopologyRequest):
+    """Carga el inventario del Excel y crea un proceso por activo."""
+    return plant.load_topology(
+        assets      = request.assets,
+        connections = request.connections,
+        variables   = request.variables,
+        lab_data    = request.lab_data,
+    )
 
+
+@app.get("/api/plant/topology")
+def get_topology():
+    """Inventario y diseño Purdue actuales (restauración tras refrescar)."""
+    return plant.get_topology()
 
 @app.get("/api/equipment/{asset_id}")
 def get_asset_state(asset_id: str):
@@ -412,3 +429,8 @@ async def plant_websocket(websocket: WebSocket):
             "WEBSOCKET ERROR:",
             repr(error)
         )
+import os
+from fastapi.staticfiles import StaticFiles
+_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.isdir(_DIST):
+    app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")

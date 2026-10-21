@@ -32,6 +32,11 @@ PROTO_SVC = {
 }
 
 import re
+from datetime import datetime
+
+
+def _now_str():
+    return datetime.now().strftime("%a %b %d %H:%M:%S %Y")
 from simulation.firewall import app_of
 
 # Categorías consideradas "OT" (protegidas por el firewall perimetral).
@@ -47,6 +52,7 @@ class AttackerConsole:
         self.plant = plant
         self.ip = "192.168.100.66"      # Kali en IT/corporativo
         self.zone = "IT"
+        self.files = {}                 # mini-FS en memoria para nano/echo/cat/ls
 
     # -------------------------------------------------- postura de seguridad
     def posture(self):
@@ -109,6 +115,7 @@ class AttackerConsole:
         if prog == "ping":                  return self._ping(parts[1:])
         if prog == "nmap":                  return self._nmap(parts[1:])
         if prog in ("plcscan", "s7scan"):   return self._plcscan(parts[1:])
+        if prog in ("s7-read", "s7read", "s7-dump"): return self._s7read(parts[1:])
         if prog in ("s7-stop", "s7stop"):   return self._s7_stop(parts[1:])
         if prog in ("modbus-read", "modread"):   return self._modbus(parts[1:], write=False)
         if prog in ("modbus-write", "modwrite"): return self._modbus(parts[1:], write=True)
@@ -118,6 +125,15 @@ class AttackerConsole:
         if prog in ("hydra", "bruteforce"):      return self._hydra(parts[1:])
         if prog in ("arpspoof", "mitm", "ettercap"): return self._mitm(parts[1:])
         if prog == "msfconsole":            return "msf6 > consola Metasploit simulada. Usa los comandos del lab (help)."
+        if prog == "pwd":                   return "/root"
+        if prog == "uname":                 return ("Linux kali 6.8.0-kali7-amd64 #1 SMP x86_64 GNU/Linux"
+                                                     if "-a" in parts else "Linux")
+        if prog == "date":                  return _now_str()
+        if prog == "ls":                    return self._ls(parts[1:])
+        if prog == "cat":                   return self._cat(parts[1:])
+        if prog == "rm":                    return self._rm(parts[1:])
+        if prog == "echo":                  return self._echo(cmd, parts)
+        if prog in ("nano", "vi", "vim", "edit"): return self._edit(parts[1:])
         return f"{prog}: command not found  (escribe 'help')"
 
     # -------------------------------------------------- comandos
@@ -141,8 +157,13 @@ class AttackerConsole:
             "    modbus-write <ip> <reg> <val>   escribe un registro (mueve actuadores)\n"
             "    modbus-read <ip> <reg>      lee un registro\n"
             "    dos <ip>                    denegación de servicio (deja el equipo fuera)\n"
+            "  ARCHIVOS / EDITOR\n"
+            "    ls | cat <f> | rm <f>       lista / muestra / borra archivos del lab\n"
+            "    echo 'texto' > <f>          crea un archivo  (>> para agregar)\n"
+            "    nano <f> | vi <f>           abre el editor (panel Script) con ese archivo\n"
+            "    pwd | uname -a | date       utilidades del sistema\n"
             "  SCRIPTS\n"
-            "    Usa el botón 'Script' para cargar/pegar tu propio código y ejecutarlo.\n"
+            "    Usa el botón 'Script' (o 'nano') para editar y ejecutar tu propio código.\n"
             "    clear                       limpia la pantalla\n"
         )
 
@@ -184,8 +205,11 @@ class AttackerConsole:
         hosts = self._hosts()
         if targets_tokens:
             tok = targets_tokens[-1]
-            sub = tok.rsplit(".", 1)[0] if "/" in tok or tok.count(".") == 3 else tok
-            hosts = [h for h in hosts if h.ip == tok or h.id == tok or h.ip.startswith(sub)]
+            if "/" in tok:                       # red CIDR (p.ej. 10.10.10.0/24) -> subred /24
+                sub = tok.split("/")[0].rsplit(".", 1)[0]
+                hosts = [h for h in hosts if h.ip.startswith(sub + ".")]
+            else:                                # IP o id único -> SOLO ese host
+                hosts = [h for h in hosts if h.ip == tok or h.id == tok]
 
         seg, reason, pivot = self.posture()
         banner = f"Starting Nmap 7.94 ( {self.ip} )  [postura: {'SEGMENTADA' if seg and not pivot else 'ABIERTA'} — {reason}]"
@@ -257,6 +281,44 @@ class AttackerConsole:
                 f"  CPU state:     {cpu}\n"
                 f"  Protection:    {'none (sin contraseña)' }\n"
                 f"  >> Vulnerable: la CPU acepta comandos STOP/START sin autenticación.")
+
+    def _s7read(self, args):
+        """Vuelca los bloques de datos (DB) del PLC: las variables de proceso
+        que gobiernan la línea. 'Descifrar' lo que el PLC está controlando."""
+        if not args:
+            return "uso: s7-read <ip>   (lee los bloques de datos / variables del PLC)"
+        ap = self._find(args[0])
+        if not ap or ap.category != "plc":
+            return f"s7-read: {args[0]}: no es un PLC alcanzable"
+        if not self._allowed(ap, "s7comm", log=True):
+            _, reason, _ = self.posture()
+            return f"s7-read {ap.ip}: 102/tcp filtrado por el firewall ({reason}). Sin acceso a los DB."
+        self.plant.add_event("RECON_PLC_READ", "HIGH", "ATTACKER",
+                             f"Volcado de variables (DB) de {ap.id} desde {self.ip}")
+        lines = [
+            f"s7-read {ap.ip}  (102/tcp S7comm — lectura de bloques de datos)",
+            f"  CPU: {ap.state.get('cpu_state','RUN')}   modo: {ap.state.get('mode','REMOTE')}"
+            f"   scan: {ap.state.get('scan_ms',12.0)} ms   forces: {ap.state.get('forces',0)}",
+            "  Variables de proceso (DB en claro, sin autenticación):",
+        ]
+        found = False
+        for tid in sorted(self.plant._downstream(ap.id)):
+            t = self.plant.assets_runtime.get(tid)
+            if not t:
+                continue
+            st, c = t.state, t.category
+            if c == "motor":
+                lines.append(f"    DB1  {t.id:<16} MOTOR_SPEED    = {st.get('speed',0):7.0f} rpm  (SP {st.get('setpoint',0):.0f})"); found = True
+            elif c == "pump":
+                lines.append(f"    DB1  {t.id:<16} FLOW           = {st.get('flow',0):7.0f}      (SP {st.get('setpoint',0):.0f})"); found = True
+            elif c == "valve":
+                lines.append(f"    DB2  {t.id:<16} VALVE_POSITION = {st.get('position',0):7.0f} %"); found = True
+            elif c == "sensor":
+                lines.append(f"    DB3  {t.id:<16} {str(st.get('value',0)):>7} {st.get('unit','')}"); found = True
+        if not found:
+            lines.append("    (sin actuadores/sensores aguas abajo en la topología del Excel)")
+        lines.append("  >> Variables escribibles: pueden forzarse (modbus-write) o detenerse (s7-stop).")
+        return "\n".join(lines)
 
     def _s7_stop(self, args):
         if not args:
@@ -402,6 +464,61 @@ class AttackerConsole:
                 f"  >> Ahora puedes leer/alterar la comunicación entre ambos.")
 
     # =========================================================
+    # MINI-SISTEMA DE ARCHIVOS (nano / echo / cat / ls / rm)
+    # Todo vive en memoria del laboratorio; nunca toca el host.
+    # =========================================================
+    def _ls(self, args):
+        if not self.files:
+            return "(directorio vacío — crea un archivo con: echo '...' > archivo  o  nano archivo)"
+        return "  ".join(sorted(self.files))
+
+    def _cat(self, args):
+        if not args:
+            return "uso: cat <archivo>"
+        f = args[0]
+        if f not in self.files:
+            return f"cat: {f}: no existe ese archivo"
+        return self.files[f]
+
+    def _rm(self, args):
+        if not args:
+            return "uso: rm <archivo>"
+        f = args[0]
+        if f in self.files:
+            del self.files[f]
+            return ""
+        return f"rm: {f}: no existe ese archivo"
+
+    def _echo(self, raw, parts):
+        # echo texto                 -> imprime
+        # echo texto > archivo       -> escribe (reemplaza)
+        # echo texto >> archivo      -> agrega
+        body = raw[len(parts[0]):].strip()
+        fname, append = None, False
+        if ">>" in body:
+            body, fname = body.split(">>", 1); append = True
+        elif ">" in body:
+            body, fname = body.split(">", 1)
+        text = body.strip().strip('"').strip("'")
+        if fname is None:
+            return text
+        fname = fname.strip()
+        if not fname:
+            return "echo: falta el nombre de archivo tras '>'"
+        if append and fname in self.files:
+            self.files[fname] += "\n" + text
+        else:
+            self.files[fname] = text
+        return ""   # como en bash: la redirección no imprime nada
+
+    def _edit(self, args):
+        """nano/vi <archivo>: abre el editor del panel Script con el contenido
+        del archivo (o vacío). El frontend intercepta el marcador __EDIT__."""
+        fname = args[0] if args else "exploit.sh"
+        content = self.files.get(fname, "")
+        return f"__EDIT__\t{fname}\t{content}"
+
+    # =========================================================
     # EJECUCIÓN DE SCRIPTS DEL USUARIO (sandbox)
     # =========================================================
     def run_script(self, text):
@@ -411,7 +528,7 @@ class AttackerConsole:
         out = ["[*] Ejecutando script en el sandbox del laboratorio...", ""]
         variables = {}
         last_ip = None
-        CMDS = ("ifconfig","whoami","ping","nmap","plcscan","s7scan","s7-stop","s7stop",
+        CMDS = ("ifconfig","whoami","ping","nmap","plcscan","s7scan","s7-read","s7read","s7-stop","s7stop",
                 "modbus-read","modbus-write","opcua-browse","opcua","curl","wget","hmi-login",
                 "dos","ddos","flood","hydra","bruteforce","arpspoof","mitm","ettercap","help","clear")
         for raw in (text or "").splitlines():
@@ -456,6 +573,9 @@ class AttackerConsole:
         if m and last_ip: return f"modbus-write {last_ip} {m.group(1)} {m.group(2)}"
         m = re.search(r"read_(?:holding_registers|register)\s*\(\s*(\d+)", l)
         if m and last_ip: return f"modbus-read {last_ip} {m.group(1)}"
+        # snap7 / S7: plc.read_area() / db_read() -> volcado de DB
+        if re.search(r"read_area|db_read|read_db|\.get_db", l, re.I) and last_ip:
+            return f"s7-read {last_ip}"
         # snap7 / S7: plc.stop(), cpu stop
         if re.search(r"\.stop\s*\(\)|s7.*stop|cpu.*stop", l, re.I) and last_ip:
             return f"s7-stop {last_ip}"
