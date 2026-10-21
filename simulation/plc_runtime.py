@@ -23,16 +23,38 @@ PROCESS_OUTPUTS = {
 
 
 class PLCRuntime:
-    def __init__(self, plant):
+    def __init__(self, plant, plc_id=None, line=None):
         self.plant = plant
+        self.plc_id = plc_id          # None = motor legado (PLC-001 global)
+        self.line = line              # línea cuyo ProcessState controla este PLC
         self.flags = {"ALARM": False}
         self.memory = {}          # variables internas declaradas por el alumno
         self._compiled = None     # lista de sentencias (árbol plano) ya parseada
         self._compiled_src = None
 
+    # --------------------------------------------- resolución PLC / línea
+    def _program(self):
+        if self.plc_id and self.plc_id in getattr(self.plant, "plc_programs", {}):
+            return self.plant.plc_programs[self.plc_id]
+        return self.plant.plc_program
+
+    def _proc(self):
+        procs = getattr(self.plant, "processes", None)
+        if self.line and procs and self.line in procs:
+            return procs[self.line]
+        return self.plant.process
+
+    def _cpu_run(self):
+        if self.plc_id and self.plc_id in getattr(self.plant, "assets_runtime", {}):
+            return self.plant.assets_runtime[self.plc_id].state.get("cpu_state") == "RUN"
+        return self.plant.plc.cpu_state == "RUN"
+
+    def _src(self):
+        return self.plc_id or "PLC-001"
+
     # ------------------------------------------------------------------ RUN
     def run(self):
-        program = self.plant.plc_program
+        program = self._program()
         if not program.source:
             raise ValueError("No hay programa PLC cargado.")
         errors = program.validate()
@@ -47,22 +69,22 @@ class PLCRuntime:
         program.status = "RUNNING"
         program.last_error = ""
         self.plant.add_event(
-            "PLC_PROGRAM_RUN", "INFO", "PLC-001",
+            "PLC_PROGRAM_RUN", "INFO", self._src(),
             f"PLC program {program.name} v{program.version} started",
         )
 
     def stop(self):
-        program = self.plant.plc_program
+        program = self._program()
         if program.running:
             program.running = False
             program.status = "STOPPED"
             self.plant.add_event(
-                "PLC_PROGRAM_STOP", "INFO", "PLC-001",
+                "PLC_PROGRAM_STOP", "INFO", self._src(),
                 f"PLC program {program.name} v{program.version} stopped",
             )
 
     def reset(self):
-        program = self.plant.plc_program
+        program = self._program()
         was_running = program.running
         program.running = False
         program.status = "LOADED" if program.source else "NOT_LOADED"
@@ -74,14 +96,14 @@ class PLCRuntime:
         self._compiled_src = None
         if was_running:
             self.plant.add_event(
-                "PLC_PROGRAM_RESET", "INFO", "PLC-001",
+                "PLC_PROGRAM_RESET", "INFO", self._src(),
                 "PLC program runtime reset",
             )
 
     # ---------------------------------------------------------------- CYCLE
     def cycle(self):
-        program = self.plant.plc_program
-        if not program.running or self.plant.plc.cpu_state != "RUN":
+        program = self._program()
+        if not program.running or not self._cpu_run():
             return
 
         # Recompilar si el código cambió sin pasar por run() (p.e. inyección).
@@ -107,7 +129,7 @@ class PLCRuntime:
         program.status = "ERROR"
         program.last_error = str(exc)
         self.plant.add_event(
-            "PLC_PROGRAM_ERROR", "CRITICAL", "PLC-001",
+            "PLC_PROGRAM_ERROR", "CRITICAL", self._src(),
             f"PLC runtime detenido: {exc}",
         )
 
@@ -153,7 +175,7 @@ class PLCRuntime:
             return False if typ == "BOOL" else 0.0
 
     def _process_vars(self):
-        p = self.plant.process
+        p = self._proc()
         return {
             "START": bool(p.production_running),
             "STOP": not bool(p.production_running),
@@ -185,6 +207,15 @@ class PLCRuntime:
                 self.memory[name] = value
 
     def _write_output(self, name, value, previous):
+        if self.plc_id:
+            # Fase 1: el programa escribe en el ProcessState de SU línea.
+            proc = self._proc()
+            if   name == "MOTOR_SPEED":    proc.motor_speed    = float(value)
+            elif name == "VALVE_POSITION": proc.valve_position = float(value)
+            elif name == "TEMPERATURE":    proc.temperature    = float(value)
+            elif name == "PRESSURE":       proc.pressure       = float(value)
+            elif name == "ALARM":          self._handle_alarm(bool(value))
+            return
         if name == "MOTOR_SPEED":
             self.plant.apply_program_motor_speed(float(value))
         elif name == "VALVE_POSITION":
@@ -199,18 +230,18 @@ class PLCRuntime:
     def _handle_alarm(self, new_alarm):
         if new_alarm and not self.flags["ALARM"]:
             self.plant.alarm_manager.trigger(
-                alarm_id="PLC_PROGRAM_ALARM",
+                alarm_id=f"PLC_PROGRAM_ALARM_{self._src()}",
                 severity="CRITICAL",
-                source="PLC-001",
+                source=self._src(),
                 message=(
                     "El programa PLC activó ALARM"
-                    f" — Temperatura {self.plant.process.temperature:.1f} °C"
+                    f" — Temperatura {self._proc().temperature:.1f} °C"
                 ),
             )
         elif not new_alarm and self.flags["ALARM"]:
-            alarm = self.plant.alarm_manager.alarms.get("PLC_PROGRAM_ALARM")
+            alarm = self.plant.alarm_manager.alarms.get(f"PLC_PROGRAM_ALARM_{self._src()}")
             if alarm and alarm.active:
-                self.plant.alarm_manager.reset("PLC_PROGRAM_ALARM")
+                self.plant.alarm_manager.reset(f"PLC_PROGRAM_ALARM_{self._src()}")
         self.flags["ALARM"] = new_alarm
 
     # ============================================================= COMPILER

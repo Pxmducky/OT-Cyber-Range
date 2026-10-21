@@ -303,9 +303,16 @@ class Plant:
     def update(self):
 
         # Execute the user-loaded PLC program before the process advances.
-        self.plc_runtime.cycle()
-
-        self.process.update()
+        if getattr(self, "plc_runtimes", None):
+            # Fase 1: un motor por PLC, un proceso por línea (independientes).
+            for rt in self.plc_runtimes.values():
+                rt.cycle()
+            for proc in self.processes.values():
+                proc.update()
+            self.process = self.processes.get(self._primary_line, self.process)
+        else:
+            self.plc_runtime.cycle()
+            self.process.update()
 
         # Synchronize PLC registers with process
         self.plc.registers["temperature"] = (
@@ -458,6 +465,30 @@ class Plant:
             aid: Firewall(aid, ap.name)
             for aid, ap in self.assets_runtime.items() if ap.category == "firewall"
         }
+        # ---- Fase 1: proceso por LÍNEA + programa por PLC ----
+        line_by_id = {
+            str(a.get("id", "")).strip(): (str(a.get("line", "")).strip() or "SHARED")
+            for a in assets
+        }
+        self.line_by_id   = line_by_id
+        self.processes     = {}   # línea -> ProcessState
+        self.plc_programs  = {}   # plc_id -> PLCProgram
+        self.plc_runtimes  = {}   # plc_id -> PLCRuntime
+        order = []
+        for aid in self.assets_runtime:
+            ln = line_by_id.get(aid, "SHARED")
+            if ln not in self.processes:
+                self.processes[ln] = ProcessState()
+                order.append(ln)
+        for aid, ap in self.assets_runtime.items():
+            if ap.category == "plc":
+                ln = line_by_id.get(aid, "SHARED")
+                self.plc_programs[aid] = PLCProgram()
+                self.plc_runtimes[aid] = PLCRuntime(self, plc_id=aid, line=ln)
+        # proceso "primario" para la vista/endpoints globales heredados
+        self._primary_line = order[0] if order else "SHARED"
+        if self.processes:
+            self.process = self.processes[self._primary_line]
         self.add_event(
             "TOPOLOGY_LOADED", "INFO", "OT-CYBER-RANGE",
             f"Inventario cargado: {len(self.assets_runtime)} activos, "
@@ -999,14 +1030,21 @@ class Plant:
         from simulation.plc_validator import validate_program
         return validate_program(source)
 
-    def load_plc_program(self, source: str):
-        errors = self.plc_program.load(source)
+    def _runtime_for(self, plc_id=None):
+        if plc_id and plc_id in getattr(self, "plc_runtimes", {}):
+            return self.plc_runtimes[plc_id], self.plc_programs[plc_id]
+        return self.plc_runtime, self.plc_program
+
+    def load_plc_program(self, source: str, plc_id=None):
+        rt, program = self._runtime_for(plc_id)
+        src = plc_id or "PLC-001"
+        errors = program.load(source)
 
         if errors:
             self.add_event(
                 event_type="PLC_PROGRAM_VALIDATION_FAILED",
                 severity="HIGH",
-                source="PLC-001",
+                source=src,
                 message="PLC program download rejected: " + "; ".join(errors),
             )
             return errors
@@ -1014,29 +1052,33 @@ class Plant:
         self.add_event(
             event_type="PLC_PROGRAM_DOWNLOAD",
             severity="INFO",
-            source="PLC-001",
+            source=src,
             message=(
-                f"PLC program MAIN v{self.plc_program.version} "
-                "downloaded to PLC memory"
+                f"PLC program MAIN v{program.version} "
+                f"downloaded to {src}"
             ),
         )
         return []
 
-    def run_plc_program(self):
-        self.plc_runtime.run()
-        return self.plc_program.to_dict()
+    def run_plc_program(self, plc_id=None):
+        rt, program = self._runtime_for(plc_id)
+        rt.run()
+        return program.to_dict()
 
-    def stop_plc_program(self):
-        self.plc_runtime.stop()
-        return self.plc_program.to_dict()
+    def stop_plc_program(self, plc_id=None):
+        rt, program = self._runtime_for(plc_id)
+        rt.stop()
+        return program.to_dict()
 
-    def reset_plc_program(self):
-        self.plc_runtime.reset()
+    def reset_plc_program(self, plc_id=None):
+        rt, program = self._runtime_for(plc_id)
+        rt.reset()
         self.alarm_manager.reset_all()
-        return self.plc_program.to_dict()
+        return program.to_dict()
 
-    def get_plc_program(self):
-        return self.plc_program.to_dict()
+    def get_plc_program(self, plc_id=None):
+        rt, program = self._runtime_for(plc_id)
+        return program.to_dict()
 
     # =========================================================
     # ALARM CONTROL
@@ -1686,6 +1728,12 @@ class Plant:
 
             "plc_program":
                 self.plc_program.to_dict(),
+
+            "processes":
+                {ln: pr.get_state() for ln, pr in getattr(self, "processes", {}).items()},
+
+            "plc_programs":
+                {pid: pg.to_dict() for pid, pg in getattr(self, "plc_programs", {}).items()},
 
             "alarms":
                 self.alarm_manager.get_state(),

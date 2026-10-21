@@ -357,7 +357,171 @@ function TopologyView({ assets, connections, selectedId, onAssetClick, lineColor
 }
 
 /* ── LINE DETAIL VIEW ── */
-function LineDetailView({ lineKey, assets, connections, lineMeta, onBack, onAssetClick, selectedId, activity = {}, health = {} }) {
+/* ── PANEL GENERAL TIPO SIEM/SPLUNK (vista principal) ───────────────── */
+const SEV_COLOR = { CRITICAL:"#ef4444", HIGH:"#f97316", WARNING:"#f59e0b", INFO:"#38bdf8" };
+const SEV_ORDER = ["CRITICAL","HIGH","WARNING","INFO"];
+
+function Panel({ title, children, flex = 1, minWidth = 240 }) {
+  return (
+    <div style={{ flex, minWidth, background:"rgba(255,255,255,0.02)", border:"1px solid #16202e", borderRadius:10, padding:"12px 14px", display:"flex", flexDirection:"column" }}>
+      <div style={{ fontSize:9, fontFamily:"monospace", color:"#64748b", letterSpacing:".12em", marginBottom:10 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function PlantOverview({ events = [], processes = {}, assets = [], lineMeta = {}, lineOrder = [], byLine = {} }) {
+  // --- severidad de eventos ---
+  const sevCount = { CRITICAL:0, HIGH:0, WARNING:0, INFO:0 };
+  for (const e of events) { const s = (e.severity || "INFO").toUpperCase(); if (s in sevCount) sevCount[s]++; }
+
+  // --- timeline de actividad (24 cubos sobre los últimos ~120 eventos) ---
+  const recent = events.slice(-120);
+  const BINS = 24;
+  const per = Math.max(1, Math.ceil(recent.length / BINS));
+  const bins = Array.from({ length: BINS }, (_, i) => {
+    const chunk = recent.slice(i * per, (i + 1) * per);
+    let worst = null;
+    for (const e of chunk) {
+      const s = (e.severity || "INFO").toUpperCase();
+      if (worst === null || SEV_ORDER.indexOf(s) < SEV_ORDER.indexOf(worst)) worst = s;
+    }
+    return { n: chunk.length, sev: worst || "INFO" };
+  });
+  const maxBin = Math.max(1, ...bins.map(b => b.n));
+
+  // --- top tipos de evento ---
+  const typeCount = {};
+  for (const e of events) { const t = e.event_type || "EVENT"; typeCount[t] = (typeCount[t] || 0) + 1; }
+  const topTypes = Object.entries(typeCount).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const maxType = Math.max(1, ...topTypes.map(([, n]) => n));
+
+  // --- estado de activos ---
+  let onl = 0, wrn = 0, crit = 0;
+  for (const a of assets) {
+    const st = (a.status || "ONLINE").toUpperCase();
+    if (["COMPROMISED","OFFLINE","DAMAGED","FAULT"].includes(st)) crit++;
+    else if (st === "WARNING") wrn++;
+    else onl++;
+  }
+  const totalSt = Math.max(1, onl + wrn + crit);
+
+  // --- producción por línea ---
+  const prodLines = lineOrder.filter(l => l !== "SHARED" && byLine[l]?.length);
+
+  return (
+    <div style={{ marginBottom:24 }}>
+      <div style={{ fontSize:10, fontFamily:"monospace", color:"#334155", letterSpacing:".12em", marginBottom:12 }}>
+        MONITOREO OT — VISTA GENERAL
+      </div>
+      <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
+
+        {/* severidad */}
+        <Panel title="EVENTOS POR SEVERIDAD" minWidth={220}>
+          <div style={{ display:"flex", gap:8 }}>
+            {SEV_ORDER.map(s => (
+              <div key={s} style={{ flex:1, textAlign:"center", background:SEV_COLOR[s]+"12", border:`1px solid ${SEV_COLOR[s]}33`, borderRadius:8, padding:"10px 4px" }}>
+                <div style={{ fontSize:20, fontWeight:800, fontFamily:"monospace", color:SEV_COLOR[s], lineHeight:1 }}>{sevCount[s]}</div>
+                <div style={{ fontSize:7, color:"#64748b", marginTop:4, letterSpacing:".06em" }}>{s}</div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+
+        {/* timeline */}
+        <Panel title="ACTIVIDAD DE EVENTOS (RECIENTE →)" flex={1.6} minWidth={300}>
+          <svg viewBox={`0 0 ${BINS * 10} 46`} preserveAspectRatio="none" style={{ width:"100%", height:52 }}>
+            {bins.map((b, i) => {
+              const h = (b.n / maxBin) * 40;
+              return <rect key={i} x={i * 10 + 1} y={44 - h} width={8} height={Math.max(h, b.n ? 2 : 0)} rx={1} fill={SEV_COLOR[b.sev]} opacity={b.n ? 0.9 : 0.12} />;
+            })}
+            <line x1={0} y1={44} x2={BINS * 10} y2={44} stroke="#1e293b" strokeWidth={0.5} />
+          </svg>
+          <div style={{ fontSize:8, color:"#4b5563", fontFamily:"monospace", marginTop:4 }}>color = severidad más alta del intervalo · {events.length} eventos totales</div>
+        </Panel>
+
+        {/* estado de activos */}
+        <Panel title="ESTADO DE ACTIVOS" minWidth={200}>
+          <div style={{ display:"flex", height:22, borderRadius:6, overflow:"hidden", border:"1px solid #16202e" }}>
+            <div style={{ width:`${onl/totalSt*100}%`, background:"#22c55e" }} />
+            <div style={{ width:`${wrn/totalSt*100}%`, background:"#f59e0b" }} />
+            <div style={{ width:`${crit/totalSt*100}%`, background:"#ef4444" }} />
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, fontFamily:"monospace", fontSize:9 }}>
+            <span style={{ color:"#22c55e" }}>● {onl} en línea</span>
+            <span style={{ color:"#f59e0b" }}>● {wrn} alerta</span>
+            <span style={{ color:"#ef4444" }}>● {crit} crítico</span>
+          </div>
+        </Panel>
+
+        {/* producción por línea */}
+        <Panel title="PRODUCCIÓN POR LÍNEA" minWidth={240}>
+          {prodLines.length === 0 ? (
+            <div style={{ color:"#4b5563", fontSize:9, fontFamily:"monospace" }}>Sin líneas.</div>
+          ) : prodLines.map(l => {
+            const meta = lineMeta[l] ?? { color:"#60a5fa", label:l };
+            const rate = Number(processes[l]?.production_rate ?? 0);
+            return (
+              <div key={l} style={{ marginBottom:8 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", fontFamily:"monospace", fontSize:8, color:"#94a3b8", marginBottom:3 }}>
+                  <span>{meta.label ?? l}</span><span>{rate.toFixed(0)}%</span>
+                </div>
+                <div style={{ height:8, background:"#0d1520", borderRadius:4, overflow:"hidden" }}>
+                  <div style={{ width:`${Math.max(0, Math.min(100, rate))}%`, height:"100%", background:meta.color, borderRadius:4 }} />
+                </div>
+              </div>
+            );
+          })}
+        </Panel>
+
+        {/* top tipos de evento */}
+        <Panel title="TOP TIPOS DE EVENTO" minWidth={240}>
+          {topTypes.length === 0 ? (
+            <div style={{ color:"#4b5563", fontSize:9, fontFamily:"monospace" }}>Sin eventos.</div>
+          ) : topTypes.map(([t, n]) => (
+            <div key={t} style={{ marginBottom:7 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontFamily:"monospace", fontSize:8, color:"#94a3b8", marginBottom:3 }}>
+                <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:170 }}>{t}</span><span>{n}</span>
+              </div>
+              <div style={{ height:6, background:"#0d1520", borderRadius:3, overflow:"hidden" }}>
+                <div style={{ width:`${n/maxType*100}%`, height:"100%", background:"#38bdf8", borderRadius:3 }} />
+              </div>
+            </div>
+          ))}
+        </Panel>
+
+      </div>
+    </div>
+  );
+}
+
+function LineMetrics({ process, color = "#22d3ee" }) {
+  if (!process) {
+    return (
+      <div style={{ padding:"10px 24px", borderBottom:`1px solid ${color}11`, color:"#4b5563", fontSize:9, fontFamily:"monospace" }}>
+        Sin datos de proceso para esta línea (programa un PLC de la línea para verla en marcha).
+      </div>
+    );
+  }
+  const p = process;
+  const Card = ({ label, value, ok = true }) => (
+    <div style={{ flex:1, minWidth:120, background:"rgba(255,255,255,0.02)", border:`1px solid ${color}22`, borderRadius:8, padding:"10px 14px" }}>
+      <div style={{ color:"#64748b", fontSize:8, fontFamily:"monospace", letterSpacing:".1em", marginBottom:4 }}>{label}</div>
+      <div style={{ color:"#e2e8f0", fontSize:16, fontFamily:"monospace", fontWeight:700 }}>{value}</div>
+      <div style={{ color: ok ? "#22c55e" : "#f59e0b", fontSize:8, fontFamily:"monospace", marginTop:3 }}>● {ok ? "NOMINAL" : "REVISAR"}</div>
+    </div>
+  );
+  return (
+    <div style={{ display:"flex", gap:10, padding:"12px 24px", flexWrap:"wrap", borderBottom:`1px solid ${color}11`, flexShrink:0 }}>
+      <Card label="PRODUCTION"  value={`${Number(p.production_rate ?? 0).toFixed(0)}%`}    ok={(p.production_rate ?? 0) > 80} />
+      <Card label="TEMPERATURE" value={`${Number(p.temperature ?? 0).toFixed(1)}°C`} />
+      <Card label="PRESSURE"    value={`${Number(p.pressure ?? 0).toFixed(2)} bar`} />
+      <Card label="MOTOR SPEED" value={`${Number(p.motor_speed ?? 0).toFixed(0)} RPM`}    ok={(p.motor_speed ?? 0) > 1000} />
+    </div>
+  );
+}
+
+function LineDetailView({ lineKey, assets, connections, lineMeta, process, onBack, onAssetClick, selectedId, activity = {}, health = {} }) {
   const meta      = lineMeta?.[lineKey] ?? LINE_META[lineKey] ?? { label: lineKey, color: "#4b5563", icon: "⚙", bg: "transparent" };
   const assetIds  = new Set(assets.map(a => a.id));
   const lineConns = connections.filter(c => assetIds.has(c.sourceId) || assetIds.has(c.targetId));
@@ -381,6 +545,7 @@ function LineDetailView({ lineKey, assets, connections, lineMeta, onBack, onAsse
         </div>
         <div style={{ color:"#1e293b", fontSize:8, fontFamily:"monospace", flexShrink:0 }}>clic en equipo → interfaz completa</div>
       </div>
+      <LineMetrics process={process} color={meta.color} />
       <div style={{ flex:1, overflowY:"auto", overflowX:"auto", padding:"16px 24px 24px" }}>
         <TopologyView assets={assets} connections={lineConns} selectedId={selectedId} onAssetClick={onAssetClick} lineColor={meta.color} activity={activity} health={health}/>
       </div>
@@ -447,6 +612,8 @@ export default function DynamicPlant({
   alarms       = [],
   activity     = {},
   health       = {},
+  processes    = {},
+  plantStatus  = null,
   onAssetSelect,
   onImportRequest,
 }) {
@@ -520,11 +687,10 @@ export default function DynamicPlant({
     };
     return (
       <EquipmentInterface
-      asset={adapted}
-      labData={labData}
-      plant={{ process: null, events }}
-      events={events}
-      onBack={() => setInterfaceAsset(null)}
+        asset={adapted}
+        plant={{ process: null, events }}
+        events={events}
+        onBack={() => setInterfaceAsset(null)}
       />
     );
   }
@@ -554,6 +720,7 @@ export default function DynamicPlant({
           assets      = {byLine[activeLine] ?? []}
           connections = {connections}
           lineMeta    = {lineMeta}
+          process     = {processes[activeLine]}
           activity    = {activity}
           health      = {health}
           onBack      = {() => { setActiveLine(null); setSelectedAsset(null); }}
@@ -596,6 +763,15 @@ export default function DynamicPlant({
           </div>
         )}
       </div>
+
+      <PlantOverview
+        events={events}
+        processes={processes}
+        assets={assets}
+        lineMeta={lineMeta}
+        lineOrder={lineOrder}
+        byLine={byLine}
+      />
 
       <div style={{ display:"flex", flexWrap:"wrap", gap:20, marginBottom:32 }}>
         {lineOrder.filter(l => l !== "SHARED" && byLine[l]?.length).map(lineKey => (

@@ -2,6 +2,8 @@ import asyncio
 from typing import Optional
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel
 from simulation.plant import Plant
 from simulation.attack_engine import SCENARIOS
@@ -19,7 +21,8 @@ app.add_middleware(
 )
 plant = Plant()
 class PLCProgramRequest(BaseModel):
-    source: str
+    source: str = ""
+    plc_id: Optional[str] = None
 class AlarmActionRequest(BaseModel):
     alarm_id: str
 class ProcessSetRequest(BaseModel):
@@ -52,10 +55,10 @@ class EquipmentActionRequest(BaseModel):
 
 
 class LoadTopologyRequest(BaseModel):
-    lab_data:    Optional[dict] = None   # labData completo del Excel (para restaurar al refrescar)
     assets:      list = []
     connections: list = []
     variables:   list = []
+    lab_data:    Optional[dict] = None   # labData completo del Excel (para restaurar al refrescar)
 
 
 class AttackerCommand(BaseModel):
@@ -72,11 +75,10 @@ class FirewallCommit(BaseModel):
 
 
 class SegmentationRequest(BaseModel):
-    lab_data:    Optional[dict] = None   # labData completo del Excel (para restaurar al refrescar)
-    bands:      Optional[dict] = None    # asset_id -> banda Purdue (IT/DMZ/L3/L2/L1/L0)
     placements: dict = {}
-@app.get("/api/health")
-def root():
+    bands:      Optional[dict] = None    # asset_id -> banda Purdue (IT/DMZ/L3/L2/L1/L0)
+@app.get("/healthz")
+def healthz():
     return {
         "application": "OT Cyber Range",
         "status": "ONLINE",
@@ -177,15 +179,15 @@ def reset_plc():
     )
     return plant.get_state()
 @app.get("/api/plc/program")
-def get_plc_program():
-    return plant.get_plc_program()
+def get_plc_program(plc_id: Optional[str] = None):
+    return plant.get_plc_program(plc_id)
 @app.post("/api/plc/program/validate")
 def validate_plc_program(request: PLCProgramRequest):
     errors = plant.validate_plc_program(request.source)
     return {"valid": len(errors) == 0, "errors": errors}
 @app.post("/api/plc/program/download")
 def download_plc_program(request: PLCProgramRequest):
-    errors = plant.load_plc_program(request.source)
+    errors = plant.load_plc_program(request.source, request.plc_id)
     if errors:
         raise HTTPException(
             status_code=422,
@@ -196,17 +198,17 @@ def download_plc_program(request: PLCProgramRequest):
         )
     return plant.get_plc_program()
 @app.post("/api/plc/program/run")
-def run_plc_program():
+def run_plc_program(request: PLCProgramRequest = PLCProgramRequest()):
     try:
-        return plant.run_plc_program()
+        return plant.run_plc_program(request.plc_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error))
 @app.post("/api/plc/program/stop")
-def stop_plc_program():
-    return plant.stop_plc_program()
+def stop_plc_program(request: PLCProgramRequest):
+    return plant.stop_plc_program(request.plc_id)
 @app.post("/api/plc/program/reset")
-def reset_plc_program():
-    return plant.reset_plc_program()
+def reset_plc_program(request: PLCProgramRequest):
+    return plant.reset_plc_program(request.plc_id)
 # =====================================================================
 # HMI SETPOINTS
 # El operador introduce valores desde el panel KP400.
@@ -330,14 +332,6 @@ def load_topology(request: LoadTopologyRequest):
         assets      = request.assets,
         connections = request.connections,
         variables   = request.variables,
-    )
-@app.post("/api/plant/load")
-def load_topology(request: LoadTopologyRequest):
-    """Carga el inventario del Excel y crea un proceso por activo."""
-    return plant.load_topology(
-        assets      = request.assets,
-        connections = request.connections,
-        variables   = request.variables,
         lab_data    = request.lab_data,
     )
 
@@ -346,6 +340,7 @@ def load_topology(request: LoadTopologyRequest):
 def get_topology():
     """Inventario y diseño Purdue actuales (restauración tras refrescar)."""
     return plant.get_topology()
+
 
 @app.get("/api/equipment/{asset_id}")
 def get_asset_state(asset_id: str):
@@ -359,7 +354,7 @@ def get_asset_state(asset_id: str):
 @app.post("/api/segmentation")
 def set_segmentation(request: SegmentationRequest):
     """Aplica la segmentación (zonas por activo) definida en la vista Purdue."""
-    return plant.set_segmentation(request.placements)
+    return plant.set_segmentation(request.placements, request.bands)
 
 
 @app.post("/api/attacker/exec")
@@ -429,8 +424,13 @@ async def plant_websocket(websocket: WebSocket):
             "WEBSOCKET ERROR:",
             repr(error)
         )
-import os
-from fastapi.staticfiles import StaticFiles
-_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-if os.path.isdir(_DIST):
-    app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")
+
+
+# =====================================================================
+# FRONTEND (SPA) — servir el build de Vite copiado por el Dockerfile.
+# Debe ir al FINAL: las rutas /api y el websocket ya están registradas
+# arriba y tienen prioridad; este mount sirve index.html y los assets.
+# =====================================================================
+_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(_DIST), html=True), name="spa")

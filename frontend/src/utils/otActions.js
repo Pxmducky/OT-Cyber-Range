@@ -60,6 +60,7 @@ export function connActivity(activity, a, b) {
   return best;
 }
 
+/* ── Carga de topología: envía el inventario del Excel al backend ── */
 export async function loadTopology(assets = [], connections = [], variables = [], labData = null) {
   const res = await fetch(`${API_URL}/api/plant/load`, {
     method: "POST",
@@ -139,17 +140,20 @@ export async function fetchPlant() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
-export async function plcDownloadProgram(source) {
+export async function plcDownloadProgram(source, plcId = null) {
   const res = await fetch(`${API_URL}/api/plc/program/download`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, plc_id: plcId }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.detail?.message || `HTTP ${res.status}`);
   return data;
 }
-export async function plcRunProgram() {
-  const res = await fetch(`${API_URL}/api/plc/program/run`, { method: "POST" });
+export async function plcRunProgram(plcId = null) {
+  const res = await fetch(`${API_URL}/api/plc/program/run`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plc_id: plcId }),
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -182,13 +186,18 @@ END_IF
 END_PROGRAM`;
 
 /* ── Más helpers Estación de Ingeniería ── */
-export async function fetchPlcProgram() {
-  const res = await fetch(`${API_URL}/api/plc/program`);
+export async function fetchPlcProgram(plcId = null) {
+  const url = plcId ? `${API_URL}/api/plc/program?plc_id=${encodeURIComponent(plcId)}`
+                    : `${API_URL}/api/plc/program`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
-export async function plcStopProgram() {
-  const res = await fetch(`${API_URL}/api/plc/program/stop`, { method: "POST" });
+export async function plcStopProgram(plcId = null) {
+  const res = await fetch(`${API_URL}/api/plc/program/stop`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plc_id: plcId }),
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

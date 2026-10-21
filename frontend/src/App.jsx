@@ -583,95 +583,6 @@ function App() {
 
         {activePage === "plant" && (
           <section className="content">
-            <div className="process-heading">
-              <div>
-                <div className="eyebrow">
-                  INDUSTRIAL PROCESS
-                </div>
-
-                <h2>
-                  Manufacturing Cell A
-                </h2>
-              </div>
-
-              <div
-                className={
-                  plant?.plant?.status ===
-                  "RUNNING"
-                    ? "plant-status running"
-                    : "plant-status stopped"
-                }
-              >
-                <span />
-
-                <div>
-                  <strong>
-                    {plant?.plant?.status ===
-                    "RUNNING"
-                      ? "PRODUCTION RUNNING"
-                      : "PRODUCTION STOPPED"}
-                  </strong>
-
-                  <small>
-                    {plant?.plant?.line ||
-                      "Production Line 01"}
-                  </small>
-                </div>
-              </div>
-            </div>
-
-            <div className="kpi-grid">
-              <KPI
-                label="PRODUCTION"
-                value={`${Number(
-                  process?.production_rate ??
-                    0
-                ).toFixed(0)}%`}
-                status={
-                  process?.production_rate >
-                  80
-                    ? "NOMINAL"
-                    : "DEGRADED"
-                }
-                icon={<Activity />}
-              />
-
-              <KPI
-                label="TEMPERATURE"
-                value={`${Number(
-                  process?.temperature ??
-                    0
-                ).toFixed(1)}°C`}
-                status="NORMAL"
-                icon={<Gauge />}
-              />
-
-              <KPI
-                label="PRESSURE"
-                value={`${Number(
-                  process?.pressure ??
-                    0
-                ).toFixed(2)} bar`}
-                status="NORMAL"
-                icon={<Radio />}
-              />
-
-              <KPI
-                label="MOTOR SPEED"
-                value={`${Number(
-                  process?.motor_speed ??
-                    0
-                ).toFixed(0)} RPM`}
-                status={
-                  process?.motor_speed >
-                  1000
-                    ? "NOMINAL"
-                    : "WARNING"
-                }
-                icon={<Cpu />}
-              />
-            </div>
-
             <DynamicPlant
               assets={
                 importedAssets.length > 0
@@ -689,6 +600,8 @@ function App() {
               activity={plant?.activity ?? {}}
               health={plant?.health ?? {}}
               labData={labData}
+              processes={plant?.processes ?? {}}
+              plantStatus={plant?.plant?.status}
             />
 
             <div

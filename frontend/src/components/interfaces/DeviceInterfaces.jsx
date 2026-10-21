@@ -655,7 +655,7 @@ function ProgrammingApp({ appName, labData }) {
     let t, cancel = false;
     const poll = async () => {
       try { const d = await fetchAssetState(sel); if (!cancel) setCpu(d?.state?.cpu_state ?? null); } catch {}
-      try { const p = await fetchPlcProgram();   if (!cancel) setProg(p); } catch {}
+      try { const p = await fetchPlcProgram(sel);   if (!cancel) setProg(p); } catch {}
       t = setTimeout(poll, 1000);
     };
     if (sel) poll();
@@ -703,7 +703,7 @@ function ProgrammingApp({ appName, labData }) {
             <span style={{ color:C.dim, fontSize:9, fontFamily:C.mono }}>PLANTILLA:</span>
             <button onClick={() => setSource(SAFE_PLC_PROGRAM)} style={btn("#22c55e", false)}>SEGURO</button>
             <button onClick={() => setSource(MALICIOUS_PLC_PROGRAM)} style={btn("#ef4444", false)}>MALICIOSO</button>
-            <button disabled={busy} onClick={() => act(async () => { const p = await fetchPlcProgram(); if (p?.source) setSource(p.source); }, "Programa leído del PLC (upload)")} style={btn("#818cf8", busy)}>LEER DEL PLC</button>
+            <button disabled={busy} onClick={() => act(async () => { const p = await fetchPlcProgram(sel); if (p?.source) setSource(p.source); }, `Programa leído de ${sel} (upload)`)} style={btn("#818cf8", busy)}>LEER DEL PLC</button>
           </div>
           <textarea value={source} onChange={e => setSource(e.target.value)} spellCheck={false}
             style={{ background:"#02060c", border:`1px solid ${C.border}`, color:"#9fe6b0", padding:"10px 12px", borderRadius:6, fontFamily:C.mono, fontSize:11, lineHeight:1.5, height:150, resize:"vertical", outline:"none", whiteSpace:"pre" }}/>
@@ -714,11 +714,11 @@ function ProgrammingApp({ appName, labData }) {
             <button disabled={busy} onClick={() => act(() => equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "STOP" }), `⏹ CPU STOP -> ${sel} (cascada a equipos conectados)`)} style={btn("#ef4444", busy)}>STOP CPU</button>
             <button disabled={busy} onClick={() => act(async () => {
                 await equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "PROGRAM" });
-                await plcDownloadProgram(source);
-                await plcRunProgram();
+                await plcDownloadProgram(source, sel);
+                await plcRunProgram(sel);
                 await equipmentAction({ assetId: sel, assetType: selAsset?.type, action: "REMOTE" });
               }, `⬇ Programa descargado y en RUN en ${sel}`)} style={btn("#818cf8", busy)}>DESCARGAR + RUN</button>
-            <button disabled={busy} onClick={() => act(() => plcStopProgram(), "Programa detenido")} style={btn("#f59e0b", busy)}>DETENER PROGRAMA</button>
+            <button disabled={busy} onClick={() => act(() => plcStopProgram(sel), `Programa detenido en ${sel}`)} style={btn("#f59e0b", busy)}>DETENER PROGRAMA</button>
           </div>
           <div style={{ color:C.dim, fontSize:8, fontFamily:C.mono }}>
             El validador del backend rechaza código inválido. La plantilla MALICIOSA fuerza sobre-velocidad + válvula 100% + alarma (para escenarios de ataque).
